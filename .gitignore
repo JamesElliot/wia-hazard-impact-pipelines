@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+
+# Conda
+.conda/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data / outputs
+outputs/
+results/
+*.tif
+*.tiff
+*.gpkg
+*.gdb/
+*.zip
+*.nc
+*.grib
+*.grb
+*.parquet
+
+# OS
+.DS_Store

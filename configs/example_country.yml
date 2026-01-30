@@ -1,0 +1,18 @@
+iso3: SDN
+window:
+  start: "2024-12-01"
+  end: "2025-11-30"
+
+inputs:
+  admin2_path: "/path/to/admin2.gpkg"
+  admin2_key: "adm2_pcode"
+  worldpop_path: "/path/to/worldpop.tif"
+
+outputs:
+  out_dir: "./outputs/SDN_demo"
+
+hazard:
+  name: "flood_gfm"
+  params:
+    # hazard-specific parameters go here
+    example_param: 1

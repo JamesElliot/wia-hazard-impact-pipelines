@@ -1,0 +1,27 @@
+[project]
+name = "wia-hazard-impacts"
+version = "0.1.0"
+description = "Hazard impact pipelines and admin2 zonal statistics for WIA"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "WIA core team"}]
+dependencies = [
+  "pyyaml>=6.0",
+  "typer>=0.12",
+]
+
+[project.scripts]
+wia-hazard = "wia_hazard_impacts.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
