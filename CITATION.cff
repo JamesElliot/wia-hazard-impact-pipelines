@@ -3,7 +3,8 @@ message: "If you use these reference pipelines, please cite this software and th
 title: "WIA Hazard Impact Pipelines"
 type: software
 authors:
-  - name: "WIA contributors"
+  - family-names: "Brown"
+    given-names: "James"
 version: 0.1.0
 license: MIT
 repository-code: "https://github.com/JamesElliot/wia-hazard-impact-pipelines"
