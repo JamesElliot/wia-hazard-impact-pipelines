@@ -1,7 +1,7 @@
 .PHONY: install lint test
 
 install:
-	pip install -e .
+	python -m pip install -e '.[dev]' --no-build-isolation
 
 lint:
 	ruff check .

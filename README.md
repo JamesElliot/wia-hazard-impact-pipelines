@@ -1,45 +1,93 @@
 # WIA Hazard Impact Pipelines
 
-This repository standardises hazard-impact processing and **admin2 zonal statistics** generation for the **WASH Insecurity Analysis (WIA)**.
+Reference Python workflows for estimating the share of people affected by
+flooding, extreme heat, drought, and violence for the WASH Insecurity Analysis
+(WIA).
 
-It is intended to be:
+The repository is intended to make the current indicator methodology
+reviewable and reproducible while it is translated into a production workflow
+for Google Earth Engine. The Python package is the source of truth; notebooks
+are examples and quality-control aids.
 
-- **Reproducible** (fixed inputs → standard outputs)
-- **Portable** (run on new countries with a config file)
-- **Reviewable** (Python package as source of truth; notebooks as examples/QC)
+## Indicators
 
-## What’s in here
+| Hazard | Source | Current affected-population rule |
+|---|---|---|
+| Flood | Copernicus Global Flood Monitoring via EODC STAC | Population in pixels with more than the configured number of flooded days |
+| Extreme heat | Copernicus historical UTCI via CDS | Population in pixels exceeding a UTCI threshold for the configured consecutive-day period |
+| Drought | Copernicus SPEI3 via CDS | Population in pixels at or below a configured SPEI threshold in any month of the window |
+| Violence | User-supplied licensed ACLED export | Population in buffered event footprints meeting the event-count threshold |
 
-- `src/wia_hazard_impacts/` – importable Python package (source of truth)
-- `notebooks/` – the existing hazard notebooks (to be converted to thin wrappers)
-- `configs/` – example YAML configs
-- `docs/` – outputs schema + troubleshooting
+Exact defaults, processing decisions, and limitations are documented under
+[`docs/indicators/`](docs/indicators/).
 
-## Quickstart (scaffold)
+## Repository layout
 
-> The CLI is scaffolded; we’ll wire the hazard dispatch next.
+- `src/wia_pipelines/`: reusable implementation and CLI
+- `scripts/`: operational wrappers and reports
+- `notebooks/examples/`: cleared example notebooks
+- `configs/`: example country and batch configuration
+- `schemas/`: run metadata schema
+- `tests/`: unit, parity, and synthetic pipeline tests
+- `docs/`: methodology, data, output, and Earth Engine handoff guidance
+- `data/`: local-only external inputs; downloaded data are ignored by Git
 
-### 1) Create environment
+## Installation
 
-If using conda:
+The supported geospatial environment is Conda:
 
 ```bash
-conda env create -f environment.yml
-conda activate wia-hazard-impact
+conda env create -f environment.yaml
+conda activate wia-hazard-pipelines
+python -m pip install -e . --no-build-isolation
 ```
 
-### 2) Install package
+CDS-backed workflows also require locally configured CDS API credentials.
+Violence workflows require an ACLED export obtained under the user's own
+licence. No raw source datasets are distributed with this repository.
+
+## Run a pipeline
 
 ```bash
-pip install -e .
+wia-hazards run-spei --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-utci --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-flood --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-violence --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 ```
 
-### 3) Run (will exit with code 2 until dispatch is implemented)
+Use `wia-hazards --help` and the command-specific help for required input
+paths and optional thresholds. See [`docs/data-sources.md`](docs/data-sources.md)
+before running against real data.
+
+## Outputs and Earth Engine handoff
+
+Each run writes a standardized run directory containing raster products,
+administrative summary tables, QC artifacts, logs, and `run_metadata.json`.
+See:
+
+- [`docs/output-contract.md`](docs/output-contract.md)
+- [`docs/gee-handoff.md`](docs/gee-handoff.md)
+
+## Development
 
 ```bash
-wia-hazard run --config configs/example_country.yml
+python -m pip install -e '.[dev]' --no-build-isolation
+pytest -q
+ruff check .
+ruff format --check .
 ```
 
-## Outputs
+Network- and credential-dependent checks should be marked as integration tests
+and excluded from the default contributor loop.
 
-See `docs/outputs.md`.
+## Data and licensing
+
+The code is licensed under the [MIT License](LICENSE). Source datasets retain
+their own terms and attribution requirements. In particular, do not commit or
+redistribute raw ACLED records. See [`data/README.md`](data/README.md).
+
+## Status
+
+This is a reference implementation under active consolidation, not yet the
+production Google Earth Engine workflow. Methodology and output-contract
+changes should be reviewed with the WIA indicator and Earth Engine teams.

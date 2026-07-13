@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wia-hazard-layers.local/schemas/run_metadata.schema.json",
+  "title": "WIA Hazard Pipeline Run Metadata",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "created_utc",
+    "run_config",
+    "paths",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "run_config": {
+      "type": "object",
+      "required": [
+        "hazard",
+        "iso3",
+        "as_of_date",
+        "lookback_months",
+        "window_start",
+        "window_end",
+        "target_adm_level",
+        "buffer_km"
+      ],
+      "properties": {
+        "hazard": {
+          "type": "string",
+          "enum": ["flood", "heat", "drought", "violence"]
+        },
+        "iso3": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "as_of_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "lookback_months": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "target_adm_level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "buffer_km": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "paths": {
+      "type": "object",
+      "required": ["base", "raw", "rasters", "tables", "qc", "logs", "cache"],
+      "properties": {
+        "base": { "type": "string", "minLength": 1 },
+        "raw": { "type": "string", "minLength": 1 },
+        "rasters": { "type": "string", "minLength": 1 },
+        "tables": { "type": "string", "minLength": 1 },
+        "qc": { "type": "string", "minLength": 1 },
+        "logs": { "type": "string", "minLength": 1 },
+        "cache": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": true
+}

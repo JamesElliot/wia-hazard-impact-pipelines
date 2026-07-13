@@ -1,21 +1,51 @@
-[project]
-name = "wia-hazard-impacts"
-version = "0.1.0"
-description = "Hazard impact pipelines and admin2 zonal statistics for WIA"
-readme = "README.md"
-requires-python = ">=3.10"
-authors = [{name = "WIA core team"}]
-dependencies = [
-  "pyyaml>=6.0",
-  "typer>=0.12",
-]
-
-[project.scripts]
-wia-hazard = "wia_hazard_impacts.cli:main"
-
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "wia-hazard-impact-pipelines"
+version = "0.1.0"
+description = "Reference pipelines for estimating population affected by WIA hazards."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [{name = "WIA contributors"}]
+dependencies = [
+  "affine>=2.4",
+  "cdsapi>=0.6",
+  "dask[array]>=2023.0",
+  "geopandas>=0.14",
+  "jsonschema>=4.0",
+  "matplotlib>=3.8",
+  "netCDF4>=1.6",
+  "numpy>=1.26,<3.0",
+  "odc-geo>=0.4",
+  "odc-stac>=0.3",
+  "pandas>=2.1,<3.0",
+  "pyproj>=3.6",
+  "pystac-client>=0.7",
+  "rasterio>=1.3",
+  "rasterstats>=0.19",
+  "requests>=2.31",
+  "rioxarray>=0.15",
+  "shapely>=2.0",
+  "tqdm>=4.66",
+  "xarray>=2023.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "nbformat>=5.9",
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+notebooks = [
+  "ipykernel>=6.0",
+  "jupyterlab>=4.0",
+]
+
+[project.scripts]
+wia-hazards = "wia_pipelines.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -23,5 +53,13 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: requires network access, credentials, or external datasets",
+  "slow: takes too long for the default contributor test loop",
+]
+
 [tool.ruff]
-line-length = 100
+line-length = 110
+target-version = "py310"
