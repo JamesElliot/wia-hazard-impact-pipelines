@@ -53,8 +53,7 @@ def _validate_fields(gdf: gpd.GeoDataFrame, iso3_field: str, adm_level_field: st
     missing = [f for f in [iso3_field, adm_level_field] if f and f not in gdf.columns]
     if missing:
         raise KeyError(
-            f"Missing required field(s) in admin dataset: {missing}. "
-            f"Available fields: {list(gdf.columns)}"
+            f"Missing required field(s) in admin dataset: {missing}. Available fields: {list(gdf.columns)}"
         )
 
 

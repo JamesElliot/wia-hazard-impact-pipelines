@@ -13,11 +13,11 @@ class BatchManifestTests(unittest.TestCase):
             p = Path(td) / "batch.csv"
             lk = Path(td) / "iso_lookup.csv"
             p.write_text(
-                "ISO3,as_of_date,lookback\n" "LEB,2025-12-31,12\n" "YEM,2025-12-31,12\n",
+                "ISO3,as_of_date,lookback\nLEB,2025-12-31,12\nYEM,2025-12-31,12\n",
                 encoding="utf-8",
             )
             lk.write_text(
-                "Country or Area;M49 Code;ISO-alpha3 Code\n" "Lebanon;422;LBN\n" "Yemen;887;YEM\n",
+                "Country or Area;M49 Code;ISO-alpha3 Code\nLebanon;422;LBN\nYemen;887;YEM\n",
                 encoding="utf-8",
             )
             df = load_batch_manifest(p, default_admin_level=2, iso_lookup_path=lk)
@@ -33,11 +33,11 @@ class BatchManifestTests(unittest.TestCase):
             p = Path(td) / "batch.csv"
             lk = Path(td) / "iso_lookup.csv"
             p.write_text(
-                "ISO3,as_of_date,lookback,admin_level\n" "XX,not-a-date,0,9\n",
+                "ISO3,as_of_date,lookback,admin_level\nXX,not-a-date,0,9\n",
                 encoding="utf-8",
             )
             lk.write_text(
-                "Country or Area;M49 Code;ISO-alpha3 Code\n" "Yemen;887;YEM\n",
+                "Country or Area;M49 Code;ISO-alpha3 Code\nYemen;887;YEM\n",
                 encoding="utf-8",
             )
             df = load_batch_manifest(p, default_admin_level=2, iso_lookup_path=lk)
@@ -49,7 +49,7 @@ class BatchManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "batch.csv"
             p.write_text(
-                "ISO3,as_of_date,lookback,admin_level,m49_code\n" "MMR,2025-12-31,12,3,104\n" ",,,,\n",
+                "ISO3,as_of_date,lookback,admin_level,m49_code\nMMR,2025-12-31,12,3,104\n,,,,\n",
                 encoding="utf-8",
             )
             df = load_batch_manifest(p, default_admin_level=2, iso_lookup_path=None)

@@ -9,7 +9,7 @@ description = "Reference pipelines for estimating population affected by WIA haz
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
-authors = [{name = "WIA contributors"}]
+authors = [{name = "James Brown"}]
 dependencies = [
   "affine>=2.4",
   "cdsapi>=0.6",
@@ -37,7 +37,7 @@ dependencies = [
 dev = [
   "nbformat>=5.9",
   "pytest>=8.0",
-  "ruff>=0.6",
+  "ruff==0.15.17",
 ]
 notebooks = [
   "ipykernel>=6.0",

@@ -182,7 +182,7 @@ def _find_spei_var(ds) -> str:
 
     dim_map = {v: tuple(ds[v].dims) for v in candidates}
     raise KeyError(
-        "No SPEI variable with required dims (time + spatial pair) found. " f"Candidate dims: {dim_map}"
+        f"No SPEI variable with required dims (time + spatial pair) found. Candidate dims: {dim_map}"
     )
 
 

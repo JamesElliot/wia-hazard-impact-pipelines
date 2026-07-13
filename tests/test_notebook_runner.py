@@ -14,7 +14,7 @@ class NotebookRunnerTests(unittest.TestCase):
             "cells": [
                 {
                     "cell_type": "code",
-                    "source": ('ISO3 = "HTI"\n' 'AS_OF_DATE = "2025-12-31"\n' "LOOKBACK_MONTHS = 12\n"),
+                    "source": ('ISO3 = "HTI"\nAS_OF_DATE = "2025-12-31"\nLOOKBACK_MONTHS = 12\n'),
                 }
             ]
         }

@@ -58,7 +58,7 @@ class RunConfig:
         hazard_norm = (self.hazard or "").strip().lower()
         if hazard_norm not in SUPPORTED_HAZARDS:
             raise ValueError(
-                f"Unsupported hazard '{self.hazard}'. " f"Expected one of: {sorted(SUPPORTED_HAZARDS)}."
+                f"Unsupported hazard '{self.hazard}'. Expected one of: {sorted(SUPPORTED_HAZARDS)}."
             )
         if self.lookback_months < 1:
             raise ValueError(f"lookback_months must be >= 1, got {self.lookback_months}.")

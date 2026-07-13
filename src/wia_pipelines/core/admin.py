@@ -152,6 +152,5 @@ def resolve_admin_pcode_column(columns: list[str] | Any, adm_level: int) -> str:
         return pcode_cols[0]
 
     raise KeyError(
-        f"Could not resolve admin pcode column for admin level {adm_level}. "
-        f"Available columns: {col_names}"
+        f"Could not resolve admin pcode column for admin level {adm_level}. Available columns: {col_names}"
     )
