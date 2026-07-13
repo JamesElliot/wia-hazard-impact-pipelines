@@ -2,26 +2,53 @@
 __pycache__/
 *.py[cod]
 *.so
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and credentials
+.env
+.env.*
+!.env.example
 .venv/
+venv/
+env/
+.cdsapirc
 
-# Conda
-.conda/
-
-# Jupyter
+# Jupyter and editors
 .ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
 
-# Data / outputs
+# Runtime outputs, logs, downloads, and caches
 outputs/
-results/
+logs/
+tmp/
+.cache/
+
+# External datasets are never committed. Keep only documentation and examples.
+data/*
+!data/README.md
+!data/.gitkeep
+
+# Common geospatial and tabular data products outside data/
 *.tif
 *.tiff
-*.gpkg
-*.gdb/
-*.zip
 *.nc
 *.grib
-*.grb
+*.grib2
+*.gpkg
+*.gdb
+*.gdb.zip
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
 *.parquet
-
-# OS
-.DS_Store

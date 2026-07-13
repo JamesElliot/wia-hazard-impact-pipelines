@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject committed large files
+        run: |
+          large_files="$(find . -type f -not -path './.git/*' -size +10M -print)"
+          if [[ -n "$large_files" ]]; then
+            echo "Files larger than 10 MiB must use managed external storage:"
+            echo "$large_files"
+            exit 1
+          fi
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: wia-hazard-pipelines
+          environment-file: environment.yaml
+          auto-activate-base: false
+
+      - name: Install package and development tools
+        run: python -m pip install -e '.[dev]' --no-build-isolation
+
+      - name: Check Python source
+        run: |
+          python -m compileall -q src scripts
+          ruff check src scripts tests
+          ruff format --check src scripts tests
+
+      - name: Validate notebooks
+        run: |
+          python -c "import glob, nbformat; [nbformat.validate(nbformat.read(path, as_version=4)) for path in glob.glob('notebooks/examples/*.ipynb')]"
+          python -c "import glob, nbformat; notebooks=[nbformat.read(path, as_version=4) for path in glob.glob('notebooks/examples/*.ipynb')]; assert all(not cell.get('outputs') and cell.get('execution_count') is None for nb in notebooks for cell in nb.cells if cell.cell_type == 'code')"
+
+      - name: Run tests
+        run: pytest -q
