@@ -9,6 +9,26 @@ from wia_pipelines.cli import build_parser
 
 
 class CliTests(unittest.TestCase):
+    def test_run_cyclone_dry_run_executes(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "run-cyclone",
+                "--iso3",
+                "MOZ",
+                "--as-of-date",
+                "2026-03-31",
+                "--ibtracs-path",
+                "data/cyclone/ibtracs.csv",
+                "--worldpop-path",
+                "data/population/moz.tif",
+                "--admin-path",
+                "data/cod-ab/moz.gpkg",
+                "--dry-run",
+            ]
+        )
+        self.assertEqual(args.func(args), 0)
+
     def test_init_run_command_executes(self) -> None:
         parser = build_parser()
         args = parser.parse_args(

@@ -9,7 +9,7 @@ from typing import Any
 import jsonschema
 
 
-SUPPORTED_HAZARDS = {"flood", "heat", "drought", "violence"}
+SUPPORTED_HAZARDS = {"cyclone", "drought", "flood", "heat", "violence"}
 
 
 def _validate_iso3(iso3: str) -> str:
@@ -94,6 +94,7 @@ def build_run_paths(config: RunConfig) -> dict[str, Path]:
     return {
         "base": base,
         "raw": base / "raw",
+        "intermediate": base / "intermediate",
         "rasters": base / "rasters",
         "tables": base / "tables",
         "qc": base / "qc",

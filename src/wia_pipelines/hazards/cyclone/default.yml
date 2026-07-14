@@ -1,0 +1,35 @@
+pipeline:
+  indicator: HI-06
+  version: "0.1.0"
+temporal:
+  window_months: 12
+footprint:
+  method: wind_radii
+  affected_threshold_kmh: 63
+  severity_bands_kmh: [63, 93, 119]
+  interpolation_spacing_km: 25
+  maximum_interpolation_gap_hours: 12
+  angular_step_degrees: 5
+  track_buffer_km: 500
+  minimum_radii_completeness: 0.5
+  fallback_order: [wind_radii, gdacs]
+  allow_incomplete: false
+population:
+  nodata_means_zero: true
+  all_touched: false
+  max_unassigned_fraction: 0.02
+admin:
+  level: 2
+  layer: null
+  all_touched: false
+  fields:
+    adm0_pcode: ADM0_PCODE
+    adm1_pcode: ADM1_PCODE
+    adm2_pcode: ADM2_PCODE
+    adm2_name_en: ADM2_EN
+    adm2_name_local: ADM2_REF
+    iso3: ISO3
+outputs:
+  write_mask: true
+  write_footprints: true
+  write_maps: true

@@ -24,6 +24,7 @@ dependencies = [
   "pandas>=2.1,<3.0",
   "pyproj>=3.6",
   "pystac-client>=0.7",
+  "PyYAML>=6.0",
   "rasterio>=1.3",
   "rasterstats>=0.19",
   "requests>=2.31",
@@ -52,6 +53,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"wia_pipelines.hazards.cyclone" = ["default.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

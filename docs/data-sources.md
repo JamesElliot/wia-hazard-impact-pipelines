@@ -11,6 +11,8 @@ the provider's current licence and attribution requirements.
 | Copernicus `derived-drought-historical-monthly` | Drought | Downloaded through `cdsapi` | The implementation selects SPEI3 and requests the configured monthly window. |
 | Copernicus `derived-utci-historical` | Heat | Downloaded through `cdsapi` | The implementation derives daily maximum UTCI before consecutive-day tests. |
 | EODC STAC `GFM` collection | Flood | Remote STAC assets | The default asset is `ensemble_flood_extent`. |
+| NOAA NCEI IBTrACS v4 | Cyclone | Local CSV (`last3years` or `since1980`) | Observed track points and quadrant wind radii define the baseline event footprints. |
+| GDACS tropical-cyclone wind buffers | Cyclone fallback | Remote API or local GeoPackage | Used only when an expected IBTrACS contour does not meet the configured completeness threshold. |
 | ACLED event data | Violence | User-supplied CSV | Raw records are licensed content and must never be committed or redistributed. |
 
 ## Local layout
@@ -18,6 +20,7 @@ the provider's current licence and attribution requirements.
 ```text
 data/
 ├── cod-ab/
+├── cyclone/
 ├── population/
 └── violence/
 ```

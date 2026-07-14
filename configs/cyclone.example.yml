@@ -1,0 +1,16 @@
+admin:
+  level: 2
+  layer: admin2
+  fields:
+    adm0_pcode: adm0_pcode
+    adm1_pcode: adm1_pcode
+    adm2_pcode: adm2_pcode
+    adm2_name_en: adm2_name
+    adm2_name_local: adm2_name1
+    iso3: iso3
+
+footprint:
+  affected_threshold_kmh: 63
+  severity_bands_kmh: [63, 93, 119]
+  minimum_radii_completeness: 0.5
+  allow_incomplete: false

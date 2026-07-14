@@ -4,6 +4,10 @@
 the current command-line workflow. Copy it to a local filename, edit the run
 parameters, and keep machine-specific data paths out of version control.
 
+`cyclone_batch.example.csv` uses the cyclone runner's `ISO`, `Name`, `Admin`,
+and `Date` columns. `cyclone.example.yml` shows how to map administrative
+boundary fields and change wind-footprint controls.
+
 The primary fields are:
 
 - `ISO3`
