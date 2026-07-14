@@ -709,6 +709,66 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_cyclone(args: argparse.Namespace) -> int:
+    from .hazards.cyclone.pipeline import RunInputs, run_pipeline, validate_inputs
+
+    inputs = RunInputs(
+        iso3=str(args.iso3).upper(),
+        window_end=args.as_of_date,
+        ibtracs=Path(args.ibtracs_path).expanduser().resolve(),
+        worldpop=Path(args.worldpop_path).expanduser().resolve(),
+        admin=Path(args.admin_path).expanduser().resolve(),
+        out=Path(args.output_root).expanduser().resolve(),
+        lookback_months=int(args.lookback_months),
+        config=Path(args.config).expanduser().resolve() if args.config else None,
+        gdacs_footprints=(
+            Path(args.gdacs_footprints).expanduser().resolve() if args.gdacs_footprints else None
+        ),
+        gdacs_auto=bool(args.gdacs_auto),
+    )
+    payload = {
+        "pipeline": "cyclone",
+        "iso3": inputs.iso3,
+        "as_of_date": inputs.window_end,
+        "lookback_months": inputs.lookback_months,
+        "ibtracs_path": str(inputs.ibtracs),
+        "worldpop_path": str(inputs.worldpop),
+        "admin_path": str(inputs.admin),
+        "output_root": str(inputs.out),
+        "config": str(inputs.config) if inputs.config else None,
+        "gdacs_auto": inputs.gdacs_auto,
+    }
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+    elif args.validate_only:
+        payload["status"] = "VALID"
+        payload["validation"] = validate_inputs(inputs)
+    else:
+        payload["status"] = "SUCCESS"
+        payload["run_dir"] = str(run_pipeline(inputs))
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_run_cyclone_bulk(args: argparse.Namespace) -> int:
+    from .hazards.cyclone.bulk import run_bulk
+
+    summary = run_bulk(
+        Path(args.countries).expanduser().resolve(),
+        Path(args.ibtracs_path).expanduser().resolve(),
+        Path(args.admin_archive).expanduser().resolve(),
+        [Path(path).expanduser().resolve() for path in args.worldpop_dir],
+        Path(args.worldpop_download_dir).expanduser().resolve(),
+        Path(args.inputs_dir).expanduser().resolve(),
+        Path(args.output_root).expanduser().resolve(),
+        download_missing_worldpop=bool(args.download_missing_worldpop),
+        gdacs_auto=bool(args.gdacs_auto),
+        resume=bool(args.resume),
+    )
+    print(json.dumps({"status": "COMPLETE", "summary_csv": str(summary)}, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wia-hazards")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -985,6 +1045,48 @@ def build_parser() -> argparse.ArgumentParser:
     run_flood.add_argument("--chunk-x", type=int, default=1024)
     run_flood.add_argument("--dry-run", action="store_true")
     run_flood.set_defaults(func=_cmd_run_flood)
+
+    run_cyclone = subparsers.add_parser(
+        "run-cyclone",
+        help="Run the HI-06 cyclone pipeline from IBTrACS wind radii and WorldPop.",
+    )
+    run_cyclone.add_argument("--iso3", required=True)
+    run_cyclone.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
+    run_cyclone.add_argument("--lookback-months", type=int, default=12)
+    run_cyclone.add_argument("--ibtracs-path", required=True)
+    run_cyclone.add_argument("--worldpop-path", required=True)
+    run_cyclone.add_argument("--admin-path", required=True)
+    run_cyclone.add_argument("--output-root", default="./outputs")
+    run_cyclone.add_argument(
+        "--config",
+        default=None,
+        help="Optional YAML override for admin fields, thresholds, and output controls.",
+    )
+    run_cyclone.add_argument("--gdacs-footprints", default=None)
+    run_cyclone.add_argument(
+        "--gdacs-auto",
+        action="store_true",
+        help="Fetch GDACS buffers only for storms with inadequate IBTrACS wind radii.",
+    )
+    run_cyclone.add_argument("--validate-only", action="store_true")
+    run_cyclone.add_argument("--dry-run", action="store_true")
+    run_cyclone.set_defaults(func=_cmd_run_cyclone)
+
+    cyclone_bulk = subparsers.add_parser(
+        "run-cyclone-bulk",
+        help="Run HI-06 for the countries and admin levels in a cyclone CSV manifest.",
+    )
+    cyclone_bulk.add_argument("--countries", default="./configs/cyclone_batch.example.csv")
+    cyclone_bulk.add_argument("--ibtracs-path", required=True)
+    cyclone_bulk.add_argument("--admin-archive", required=True)
+    cyclone_bulk.add_argument("--worldpop-dir", action="append", default=[])
+    cyclone_bulk.add_argument("--worldpop-download-dir", default="./data/population")
+    cyclone_bulk.add_argument("--inputs-dir", default="./data/cyclone")
+    cyclone_bulk.add_argument("--output-root", default="./outputs")
+    cyclone_bulk.add_argument("--download-missing-worldpop", action="store_true")
+    cyclone_bulk.add_argument("--gdacs-auto", action="store_true")
+    cyclone_bulk.add_argument("--resume", action="store_true")
+    cyclone_bulk.set_defaults(func=_cmd_run_cyclone_bulk)
 
     return parser
 

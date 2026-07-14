@@ -38,7 +38,7 @@
       "properties": {
         "hazard": {
           "type": "string",
-          "enum": ["flood", "heat", "drought", "violence"]
+          "enum": ["cyclone", "drought", "flood", "heat", "violence"]
         },
         "iso3": {
           "type": "string",
@@ -78,6 +78,7 @@
       "properties": {
         "base": { "type": "string", "minLength": 1 },
         "raw": { "type": "string", "minLength": 1 },
+        "intermediate": { "type": "string", "minLength": 1 },
         "rasters": { "type": "string", "minLength": 1 },
         "tables": { "type": "string", "minLength": 1 },
         "qc": { "type": "string", "minLength": 1 },

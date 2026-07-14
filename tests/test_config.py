@@ -27,6 +27,10 @@ class RunConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RunConfig(hazard="landslide", iso3="MLI", as_of_date="2025-12-31")
 
+    def test_cyclone_is_supported(self) -> None:
+        config = RunConfig(hazard="cyclone", iso3="MOZ", as_of_date="2026-03-31")
+        self.assertTrue(config.run_id.endswith("_m12_cyclone"))
+
     def test_build_paths_has_contract_keys(self) -> None:
         config = RunConfig(
             hazard="drought",
@@ -35,7 +39,16 @@ class RunConfigTests(unittest.TestCase):
             output_root=Path("./outputs"),
         )
         paths = build_run_paths(config)
-        expected = {"base", "raw", "rasters", "tables", "qc", "logs", "cache"}
+        expected = {
+            "base",
+            "raw",
+            "intermediate",
+            "rasters",
+            "tables",
+            "qc",
+            "logs",
+            "cache",
+        }
         self.assertEqual(set(paths.keys()), expected)
         self.assertIn("/drought/MLI/", str(paths["base"]))
 

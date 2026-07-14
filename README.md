@@ -1,7 +1,7 @@
 # WIA Hazard Impact Pipelines
 
 Reference Python workflows for estimating the share of people affected by
-flooding, extreme heat, drought, and violence for the WASH Insecurity Analysis
+flooding, extreme heat, drought, tropical cyclones, and violence for the WASH Insecurity Analysis
 (WIA).
 
 The repository is intended to make the current indicator methodology
@@ -16,6 +16,7 @@ are examples and quality-control aids.
 | Flood | Copernicus Global Flood Monitoring via EODC STAC | Population in pixels with more than the configured number of flooded days |
 | Extreme heat | Copernicus historical UTCI via CDS | Population in pixels exceeding a UTCI threshold for the configured consecutive-day period |
 | Drought | Copernicus SPEI3 via CDS | Population in pixels at or below a configured SPEI threshold in any month of the window |
+| Tropical cyclone | NOAA IBTrACS, with optional GDACS fallback | Population in observed 34-knot wind-radius swaths during the analysis window |
 | Violence | User-supplied licensed ACLED export | Population in buffered event footprints meeting the event-count threshold |
 
 Exact defaults, processing decisions, and limitations are documented under
@@ -53,6 +54,11 @@ wia-hazards run-spei --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-utci --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-flood --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-violence --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-cyclone --iso3 MOZ --as-of-date 2026-03-31 --lookback-months 12 \
+  --ibtracs-path data/cyclone/ibtracs.csv \
+  --worldpop-path data/population/moz_pop_2025.tif \
+  --admin-path data/cod-ab/moz_adm2.gpkg \
+  --config configs/cyclone.example.yml
 ```
 
 Use `wia-hazards --help` and the command-specific help for required input
