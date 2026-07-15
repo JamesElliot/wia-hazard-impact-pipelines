@@ -1111,9 +1111,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the HI-EQ pipeline from USGS ShakeMaps and WorldPop.",
     )
     run_earthquake.add_argument("--iso3", required=True)
-    run_earthquake.add_argument(
-        "--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date"
-    )
+    run_earthquake.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
     run_earthquake.add_argument("--lookback-months", type=int, default=12)
     run_earthquake.add_argument("--worldpop-path", required=True)
     run_earthquake.add_argument("--admin-path", required=True)

@@ -391,15 +391,15 @@ def run_pipeline(inputs: RunInputs) -> Path:
 def _source_record(metadata: dict[str, Any]) -> str:
     summary = metadata["country_summary"]
     pct = "NA" if summary["pct_affected"] is None else f"{summary['pct_affected']:.4f}%"
-    return f"""# HI-EQ source record — {metadata['iso3']}
+    return f"""# HI-EQ source record — {metadata["iso3"]}
 
-- Window: {metadata['window']['start']} to {metadata['window']['end']} (inclusive)
-- Method: {metadata['method']}
-- Primary threshold: MMI {metadata['config']['shaking']['primary_threshold_mmi']:g}
-- Population affected: {summary['pop_affected']:.2f} of {summary['pop_total']:.2f} ({pct})
-- Events included: {metadata['qa']['events_included']} of {metadata['qa']['events_considered']} considered
-- Run ID: `{metadata['run_id']}`
-- Config SHA-256: `{metadata['config_hash']}`
+- Window: {metadata["window"]["start"]} to {metadata["window"]["end"]} (inclusive)
+- Method: {metadata["method"]}
+- Primary threshold: MMI {metadata["config"]["shaking"]["primary_threshold_mmi"]:g}
+- Population affected: {summary["pop_affected"]:.2f} of {summary["pop_total"]:.2f} ({pct})
+- Events included: {metadata["qa"]["events_included"]} of {metadata["qa"]["events_considered"]} considered
+- Run ID: `{metadata["run_id"]}`
+- Config SHA-256: `{metadata["config_hash"]}`
 
 ## Interpretation and limitations
 
