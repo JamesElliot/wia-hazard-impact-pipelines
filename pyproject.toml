@@ -56,6 +56,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "wia_pipelines.hazards.cyclone" = ["default.yml"]
+"wia_pipelines.hazards.earthquake" = ["default.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -38,7 +38,7 @@
       "properties": {
         "hazard": {
           "type": "string",
-          "enum": ["cyclone", "drought", "flood", "heat", "violence"]
+          "enum": ["cyclone", "drought", "earthquake", "flood", "heat", "violence"]
         },
         "iso3": {
           "type": "string",

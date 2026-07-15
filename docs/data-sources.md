@@ -1,5 +1,18 @@
 # Data sources
 
+## USGS earthquake catalogue and ShakeMap
+
+The HI-EQ pipeline queries the public USGS FDSN event service and follows each
+catalogue event's product metadata to the selected ShakeMap `grid.xml`. Raw
+catalogue responses, event details, version identifiers, product URLs and
+checksums are retained in the run directory. A successful empty result is
+distinct from a network or product-retrieval failure. USGS products may be
+revised, so published WIA runs should freeze and retain the retrieved inputs.
+
+The default pipeline does not use smoothed visualization contours, reported
+casualties, earthquake magnitude, or PAGER loss estimates as the exposure
+footprint. PAGER is an optional external validation source.
+
 External datasets are not distributed with this repository. Each user must
 obtain the relevant source, record its version or access date, and comply with
 the provider's current licence and attribution requirements.

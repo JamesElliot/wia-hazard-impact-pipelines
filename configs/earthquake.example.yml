@@ -1,0 +1,18 @@
+admin:
+  level: 2
+  layer: admin2
+  fields:
+    adm0_pcode: adm0_pcode
+    adm1_pcode: adm1_pcode
+    adm2_pcode: adm2_pcode
+    adm2_name_en: adm2_name
+    adm2_name_local: adm2_name1
+    iso3: iso3
+
+discovery:
+  country_buffer_km: 500
+  timeout_seconds: 120
+
+shaking:
+  primary_threshold_mmi: 6.0
+  sensitivity_thresholds_mmi: [5.0, 6.0, 7.0]
