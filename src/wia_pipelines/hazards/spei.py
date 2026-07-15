@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..config import RunConfig, initialize_run_metadata, validate_run_metadata
+from ..config import RunConfig
 from ..core.admin import (
     admin_bounds_hash,
     admin_layer_label,
@@ -18,7 +18,7 @@ from ..core.admin import (
     resolve_admin_pcode_column,
 )
 from ..core.cds import months_for_last_n
-from ..core.io_paths import build_run_layout, create_run_dirs, write_json
+from ..core.pipeline import build_hazard_run_context, standardize_admin_summary, sync_run_metadata
 from ..core.worldpop import bbox_coverage_report, worldpop_profile_and_bounds
 from .coverage_checks import (
     check_worldpop_coverage,
@@ -63,32 +63,15 @@ def build_spei_run_context(
     write_metadata: bool = True,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    layout = build_run_layout(
-        output_root=config.output_root,
-        hazard="water_scarcity",
-        iso3=config.iso3,
-        run_id=config.run_id,
-    )
-    if create_dirs:
-        create_run_dirs(layout)
-
     month_window = spei_month_window(config.as_of_date, config.lookback_months)
-    metadata = initialize_run_metadata(config, paths=layout)
-    metadata["pipeline"] = "water_scarcity_spei3"
-    metadata["window_months"] = [f"{y:04d}-{m:02d}" for y, m in month_window["months"]]
-    validate_run_metadata(metadata)
-
-    metadata_path = layout["base"] / "run_metadata.json"
-    if write_metadata:
-        write_json(metadata_path, metadata)
-
-    return {
-        "config": config,
-        "layout": layout,
-        "metadata": metadata,
-        "metadata_path": metadata_path,
-        "month_window": month_window,
-    }
+    context = build_hazard_run_context(
+        config,
+        create_dirs=create_dirs,
+        write_metadata=write_metadata,
+        metadata_updates={"window_months": [f"{y:04d}-{m:02d}" for y, m in month_window["months"]]},
+    )
+    context["month_window"] = month_window
+    return context
 
 
 def prepare_spei_geography(
@@ -214,6 +197,7 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     from shapely.ops import unary_union
 
     from ..core.cds import download_cds, ensure_downloads, extract_zip_to_dir, months_for_last_n
+    from ..core.aggregation import labelled_sum
     from ..core.io_paths import append_artifact
     from ..core.raster_ops import reproject_array_to_grid, write_array_geotiff
 
@@ -239,8 +223,7 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     window_months = [pd.Period(f"{y:04d}-{m:02d}", freq="M") for y, m in month_window["months"]]
 
     def _sync_metadata() -> None:
-        validate_run_metadata(metadata)
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        sync_run_metadata(metadata, metadata_path)
 
     # Directory aliases to keep output structure consistent with existing notebook runs.
     dirs = {
@@ -638,24 +621,17 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         transform=wp_transform,
         fill=0,
         dtype="int32",
-        all_touched=True,
+        all_touched=False,
     )
-    flat_ids = admin_id_raster.ravel()
-    flat_pop = wp_arr.ravel()
-    flat_pop_valid = pop_valid_mask.ravel()
-    valid = (flat_ids > 0) & flat_pop_valid
-    ids_valid = flat_ids[valid]
-    pop_valid = flat_pop[valid]
-    pop_total_by_id = np.bincount(ids_valid, weights=pop_valid, minlength=len(admin_units_wp) + 1)
+    n_admin = len(admin_units_wp)
+    pop_total_by_id = labelled_sum(admin_id_raster, wp_arr, n_labels=n_admin, valid_mask=pop_valid_mask)
     out = pd.DataFrame(
         {
             pcode_label: admin_units_wp[pcode_label].values,
-            "admin_id": np.arange(1, len(admin_units_wp) + 1, dtype=int),
+            "admin_id": np.arange(1, n_admin + 1, dtype=int),
         }
     )
-    out["pop_total"] = out["admin_id"].map(
-        lambda i: float(pop_total_by_id[i]) if i < len(pop_total_by_id) else 0.0
-    )
+    out["pop_total"] = pop_total_by_id
     for key in thresholds.keys():
         pop_path = Path(products[key]["pop_affected_path"])
         with rasterio.open(pop_path) as src:
@@ -665,19 +641,26 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
             if arr_nodata is not None:
                 arr_ok &= arr != float(arr_nodata)
             arr_ok &= arr >= 0
-            flat_arr = arr.ravel()
-            valid_arr = valid & arr_ok.ravel()
-            ids_valid_arr = flat_ids[valid_arr]
-            vals_valid_arr = flat_arr[valid_arr]
-            pop_aff_by_id = np.bincount(
-                ids_valid_arr, weights=vals_valid_arr, minlength=len(admin_units_wp) + 1
+            pop_aff_by_id = labelled_sum(
+                admin_id_raster,
+                arr,
+                n_labels=n_admin,
+                valid_mask=pop_valid_mask & arr_ok,
             )
         col_pop = f"pop_affected_{key}"
         col_pct = f"pct_affected_{key}"
-        out[col_pop] = out["admin_id"].map(
-            lambda i: float(pop_aff_by_id[i]) if i < len(pop_aff_by_id) else 0.0
-        )
+        out[col_pop] = pop_aff_by_id
         out[col_pct] = np.where(out["pop_total"] > 0, (out[col_pop] / out["pop_total"]) * 100.0, np.nan)
+    default_key = options.default_threshold_key
+    out = standardize_admin_summary(
+        out,
+        config=config,
+        admin_level=adm_level,
+        admin_pcode_column=pcode_label,
+        population_total_column="pop_total",
+        population_affected_column=f"pop_affected_{default_key}",
+        pct_affected_column=f"pct_affected_{default_key}",
+    )
     out_csv = layout["tables"] / f"{iso3}_{admin_label}_water_scarcity_spei3_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     append_artifact(
@@ -690,7 +673,6 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         append_artifact(metadata, "admin2_water_scarcity_table", out_csv, "Admin2 SPEI exposure table")
 
     # QC summary CSV (kept small and deterministic for parity).
-    default_key = options.default_threshold_key
     qc_csv = dirs["qc_spei"] / f"{iso3}_spei_qc_{config.as_of_date}.csv"
     mask_pop_sum = float(out[f"pop_affected_{default_key}"].sum())
     qc_df = pd.DataFrame(

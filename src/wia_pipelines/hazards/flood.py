@@ -8,8 +8,13 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from ..config import RunConfig, initialize_run_metadata, validate_run_metadata
-from ..core.io_paths import build_run_layout, create_run_dirs, write_json
+from ..config import RunConfig
+from ..core.pipeline import (
+    build_hazard_run_context,
+    record_artifact,
+    standardize_admin_summary,
+    sync_run_metadata,
+)
 from .coverage_checks import check_worldpop_coverage
 
 
@@ -40,29 +45,7 @@ def build_flood_run_context(
     write_metadata: bool = True,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    layout = build_run_layout(
-        output_root=config.output_root,
-        hazard="flood",
-        iso3=config.iso3,
-        run_id=config.run_id,
-    )
-    if create_dirs:
-        create_run_dirs(layout)
-
-    metadata = initialize_run_metadata(config, paths=layout)
-    metadata["pipeline"] = "gfm_flood"
-    validate_run_metadata(metadata)
-
-    metadata_path = layout["base"] / "run_metadata.json"
-    if write_metadata:
-        write_json(metadata_path, metadata)
-
-    return {
-        "config": config,
-        "layout": layout,
-        "metadata": metadata,
-        "metadata_path": metadata_path,
-    }
+    return build_hazard_run_context(config, create_dirs=create_dirs, write_metadata=write_metadata)
 
 
 def flood_binary_from_days(flood_days, threshold_days: int = 0):
@@ -134,6 +117,18 @@ def close_enough(a: float, b: float, atol: float = 1e-3, rtol: float = 1e-7) -> 
     return math.isclose(a, b, abs_tol=atol, rel_tol=rtol)
 
 
+def group_stac_items_by_day(items) -> dict[str, list]:
+    """Group STAC acquisitions by UTC calendar day for flooded-day counting."""
+
+    grouped: dict[str, list] = {}
+    for item in items:
+        value = item.properties.get("datetime")
+        if not value:
+            raise ValueError(f"STAC item {item.id!r} has no datetime property.")
+        grouped.setdefault(str(value)[:10], []).append(item)
+    return dict(sorted(grouped.items()))
+
+
 @dataclass(frozen=True)
 class FloodPipelineRunOptions:
     inputs: FloodRunInputs
@@ -173,6 +168,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         resolve_admin_level,
         resolve_admin_pcode_column,
     )
+    from ..core.aggregation import labelled_sum
     from ..core.raster_ops import reproject_array_to_grid, write_array_geotiff
 
     inputs = options.inputs
@@ -198,12 +194,10 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     iso3 = config.iso3
 
     def _sync() -> None:
-        validate_run_metadata(metadata)
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        sync_run_metadata(metadata, metadata_path)
 
     def _artifact(kind: str, path: Path, note: str = "") -> None:
-        metadata.setdefault("artifacts", [])
-        metadata["artifacts"].append({"kind": kind, "path": str(path), "notes": note})
+        record_artifact(metadata, kind, path, note)
 
     adm_level = resolve_admin_level(options.admin_layer, config.target_adm_level)
     admin_label = admin_layer_label(adm_level)
@@ -247,7 +241,9 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     if options.datetime_range:
         datetime_range = options.datetime_range
     else:
-        datetime_range = f"{config.window_start.isoformat()}/{config.window_end.isoformat()}"
+        datetime_range = (
+            f"{config.window_start.isoformat()}T00:00:00Z/{config.window_end.isoformat()}T23:59:59Z"
+        )
     wp_cov = check_worldpop_coverage(admin_bounds_wsen, options.worldpop_path)
 
     wp_ok = float(wp_cov.get("coverage_pct", 0.0)) >= float(options.worldpop_coverage_min_pct)
@@ -287,6 +283,20 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             collections=[options.collection_id],
             intersects=mapping(country_geom),
             datetime=datetime_range,
+            limit=1000,
+            fields={
+                "include": [
+                    "id",
+                    "type",
+                    "stac_version",
+                    "collection",
+                    "links",
+                    "bbox",
+                    "geometry",
+                    "properties.datetime",
+                    f"assets.{options.asset_key}",
+                ]
+            },
         )
         items = [it for it in search.items() if options.asset_key in it.assets and it.bbox is not None]
         if not items:
@@ -356,16 +366,21 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         tight=True,
     )
 
+    daily_items = group_stac_items_by_day(items) if items else {}
     status_path = layout["logs"] / f"{iso3}_cell7_status.json"
     if not reused_existing_flood_days:
-        progress = make_progress_writer(status_path, stage="flood_days_streaming", total=len(items))
+        progress = make_progress_writer(
+            status_path,
+            stage="flood_days_streaming",
+            total=len(daily_items),
+        )
         progress(processed=0, ok=0, failed=0, current=None)
         flood_days_accum = None
 
-        for idx, item in enumerate(items, start=1):
+        for idx, (day, day_items) in enumerate(daily_items.items(), start=1):
             try:
                 ds_i = stac_load(
-                    [item],
+                    day_items,
                     bands=[options.asset_key],
                     geobox=geobox_wp,
                     chunks={"y": int(options.chunk_y), "x": int(options.chunk_x)},
@@ -378,11 +393,14 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
                     da_i = ds_i[list(ds_i.data_vars)[0]]
                 else:
                     raise RuntimeError("No data variables returned by stac_load.")
-                if "time" in da_i.dims:
-                    da_i = da_i.isel(time=0, drop=True)
                 if success == 0:
                     flood_nodata = int(da_i.attrs.get("nodata", 255))
-                hit = ((da_i != flood_nodata) & (da_i > 0)).astype("uint16")
+                observed_flood = (da_i != flood_nodata) & (da_i > 0)
+                hit = (
+                    observed_flood.any(dim="time").astype("uint16")
+                    if "time" in observed_flood.dims
+                    else observed_flood.astype("uint16")
+                )
                 hit_np = np.asarray(hit.compute().values, dtype="uint16")
                 if flood_days_accum is None:
                     flood_days_accum = np.zeros(hit_np.shape, dtype="uint16")
@@ -390,8 +408,14 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
                 success += 1
             except Exception as exc:  # pragma: no cover - network/data runtime instability
                 failed += 1
-                failures.append({"item_id": str(getattr(item, "id", idx)), "error": str(exc)})
-            progress(processed=idx, ok=success, failed=failed, current=str(getattr(item, "id", idx)))
+                failures.append(
+                    {
+                        "day": day,
+                        "item_count": str(len(day_items)),
+                        "error": str(exc),
+                    }
+                )
+            progress(processed=idx, ok=success, failed=failed, current=day)
 
         if flood_days_accum is None:
             _sync()
@@ -490,22 +514,19 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         transform=wp_transform,
         fill=0,
         dtype="int32",
-        all_touched=True,
+        all_touched=False,
     )
+    n_admin = len(admin_units_wp)
+    pop_total_by_id = np.asarray(
+        labelled_sum(admin_id, wp_arr, n_labels=n_admin, valid_mask=pop_valid), dtype="float64"
+    )
+    aff_ok = np.isfinite(pop_affected) & (pop_affected >= 0) & pop_valid
+    pop_aff_by_id = np.asarray(
+        labelled_sum(admin_id, pop_affected, n_labels=n_admin, valid_mask=aff_ok), dtype="float64"
+    )
+
     flat_id = admin_id.ravel()
     valid_cells = (flat_id > 0) & pop_valid.ravel()
-    ids_valid = flat_id[valid_cells]
-    pop_valid_vals = wp_arr.ravel()[valid_cells]
-    pop_total_by_id = np.bincount(ids_valid, weights=pop_valid_vals, minlength=len(admin_units_wp) + 1)
-
-    aff_arr = pop_affected
-    flat_aff = aff_arr.ravel()
-    aff_ok = np.isfinite(flat_aff) & (flat_aff >= 0)
-    valid_aff = valid_cells & aff_ok
-    pop_aff_by_id = np.bincount(
-        flat_id[valid_aff], weights=flat_aff[valid_aff], minlength=len(admin_units_wp) + 1
-    )
-
     flat_days = days_arr.ravel().astype("float32")
     valid_days = valid_cells & np.isfinite(flat_days)
     days_sum_by_id = np.bincount(
@@ -515,11 +536,11 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     days_max_by_id = np.zeros(len(admin_units_wp) + 1, dtype="float32")
     np.maximum.at(days_max_by_id, flat_id[valid_days], flat_days[valid_days])
 
-    ids = np.arange(1, len(admin_units_wp) + 1, dtype=int)
+    ids = np.arange(1, n_admin + 1, dtype=int)
     out = {
         pcode_label: admin_units_wp[pcode_label].values,
-        "pop_total": pop_total_by_id[ids].astype("float64"),
-        "pop_affected_flood": pop_aff_by_id[ids].astype("float32"),
+        "pop_total": pop_total_by_id,
+        "pop_affected_flood": pop_aff_by_id.astype("float32"),
         "flood_days_mean": np.where(
             days_count_by_id[ids] > 0,
             days_sum_by_id[ids] / days_count_by_id[ids],
@@ -533,6 +554,15 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         out_df["pop_total"] > 0,
         (out_df["pop_affected_flood"] / out_df["pop_total"]) * 100.0,
         np.nan,
+    )
+    out_df = standardize_admin_summary(
+        out_df,
+        config=config,
+        admin_level=adm_level,
+        admin_pcode_column=pcode_label,
+        population_total_column="pop_total",
+        population_affected_column="pop_affected_flood",
+        pct_affected_column="pct_affected_flood",
     )
     out_csv = layout["tables"] / f"{iso3}_{admin_label}_flood_exposure_{window_start}_{window_end}.csv"
     out_df.to_csv(out_csv, index=False)
@@ -557,6 +587,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         "binary_threshold_days": int(options.flood_binary_threshold_days),
         "streaming_mode": True,
         "items_total": int(len(items)),
+        "days_total": int(len(daily_items)),
         "items_success": int(success),
         "items_failed": int(failed),
         "status_file": str(status_path),

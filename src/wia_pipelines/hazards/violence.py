@@ -6,9 +6,14 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from ..config import RunConfig, initialize_run_metadata, validate_run_metadata
+from ..config import RunConfig
 from ..core.admin import admin_layer_label, admin_pcode_label, resolve_admin_level, resolve_admin_pcode_column
-from ..core.io_paths import build_run_layout, create_run_dirs, write_json
+from ..core.pipeline import (
+    build_hazard_run_context,
+    record_artifact,
+    standardize_admin_summary,
+    sync_run_metadata,
+)
 from .coverage_checks import check_worldpop_coverage
 
 
@@ -39,29 +44,7 @@ def build_violence_run_context(
     write_metadata: bool = True,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    layout = build_run_layout(
-        output_root=config.output_root,
-        hazard="violence",
-        iso3=config.iso3,
-        run_id=config.run_id,
-    )
-    if create_dirs:
-        create_run_dirs(layout)
-
-    metadata = initialize_run_metadata(config, paths=layout)
-    metadata["pipeline"] = "violence_acled_proximity"
-    validate_run_metadata(metadata)
-
-    metadata_path = layout["base"] / "run_metadata.json"
-    if write_metadata:
-        write_json(metadata_path, metadata)
-
-    return {
-        "config": config,
-        "layout": layout,
-        "metadata": metadata,
-        "metadata_path": metadata_path,
-    }
+    return build_hazard_run_context(config, create_dirs=create_dirs, write_metadata=write_metadata)
 
 
 def acled_buffer_km(event_type: str, fatalities: float) -> int:
@@ -210,12 +193,10 @@ def run_violence_pipeline(
         )
 
     def _write_metadata() -> None:
-        validate_run_metadata(metadata)
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        sync_run_metadata(metadata, metadata_path)
 
     def _add_artifact(kind: str, path: Path, note: str = "") -> None:
-        metadata.setdefault("artifacts", [])
-        metadata["artifacts"].append({"kind": kind, "path": str(path), "notes": note})
+        record_artifact(metadata, kind, path, note)
 
     adm_level = resolve_admin_level(admin_layer, config.target_adm_level)
     admin_label = admin_layer_label(adm_level)
@@ -510,14 +491,12 @@ def run_violence_pipeline(
     write_zon = make_progress_writer(zonal_status, f"{admin_label}_zonal_stats", total=5)
     write_zon(0, current="start")
     admin_zs = admin_units.to_crs("EPSG:4326") if str(admin_units.crs).upper() != "EPSG:4326" else admin_units
-    zs_total = zonal_stats(
-        admin_zs, str(worldpop_path), stats=["sum"], nodata=wp_nodata, all_touched=all_touched
-    )
+    zs_total = zonal_stats(admin_zs, str(worldpop_path), stats=["sum"], nodata=wp_nodata, all_touched=False)
     write_zon(1, ok=1, current="zonal_total_done")
-    zs_aff = zonal_stats(admin_zs, str(pop_affected_tif), stats=["sum"], nodata=0, all_touched=all_touched)
+    zs_aff = zonal_stats(admin_zs, str(pop_affected_tif), stats=["sum"], nodata=0, all_touched=False)
     write_zon(2, ok=2, current="zonal_affected_done")
     zs_weighted = zonal_stats(
-        admin_zs, str(pop_weighted_count_tif), stats=["sum"], nodata=0, all_touched=all_touched
+        admin_zs, str(pop_weighted_count_tif), stats=["sum"], nodata=0, all_touched=False
     )
     write_zon(3, ok=3, current="zonal_weighted_done")
 
@@ -539,6 +518,15 @@ def run_violence_pipeline(
             "pop_weighted_mean_event_count": pop_weighted_mean,
         }
     )
+    admin_df = standardize_admin_summary(
+        admin_df,
+        config=config,
+        admin_level=adm_level,
+        admin_pcode_column=pcode_label,
+        population_total_column="pop_total",
+        population_affected_column="pop_affected",
+        pct_affected_column="pct_affected",
+    )
     admin_df.to_csv(admin_stats_csv, index=False)
     write_zon(4, ok=4, current=f"{admin_label}_table_written")
     _add_artifact("admin_stats", admin_stats_csv, f"{admin_label.title()} violence population summary")
@@ -552,6 +540,7 @@ def run_violence_pipeline(
         "admin_layer": admin_layer,
         "admin_level": int(adm_level),
         "admin_pcode_column": pcode_label,
+        "all_touched_admin": False,
         f"n_{admin_label}": int(len(admin_df)),
         f"{admin_label}_pop_total_sum": float(admin_df["pop_total"].sum()),
         f"{admin_label}_pop_affected_sum": float(admin_df["pop_affected"].sum()),

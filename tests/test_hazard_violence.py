@@ -120,6 +120,22 @@ class ViolenceHazardTests(unittest.TestCase):
             self.assertAlmostEqual(float(table["pop_affected"].iloc[0]), 20.0, places=3)
             self.assertAlmostEqual(float(table["pop_weighted_event_count_sum"].iloc[0]), 20.0, places=3)
             self.assertAlmostEqual(float(table["pop_weighted_mean_event_count"].iloc[0]), 0.125, places=6)
+            self.assertTrue(
+                {
+                    "iso3",
+                    "admin_level",
+                    "admin_pcode",
+                    "period_start",
+                    "period_end",
+                    "hazard",
+                    "method_version",
+                    "population_total",
+                    "population_affected",
+                    "pct_affected",
+                    "hazard_data_coverage",
+                    "population_data_coverage",
+                }.issubset(table.columns)
+            )
 
 
 if __name__ == "__main__":

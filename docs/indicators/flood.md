@@ -7,6 +7,10 @@ The reference implementation queries the Copernicus Global Flood Monitoring
 `ensemble_flood_extent` asset. Daily observations are accumulated into a
 flooded-day count on the WorldPop reference grid.
 
+All GFM tiles and acquisitions for the same UTC calendar day are mosaicked with
+logical OR before the day count is incremented. Multiple acquisitions on one
+day therefore cannot inflate the flooded-day duration.
+
 A pixel is affected when:
 
 ```text
@@ -32,8 +36,8 @@ by this binary mask.
 - Default WorldPop coverage threshold: 98%.
 - Default STAC union-bounds coverage threshold: 99.999%, with a lower hard
   failure bound used to distinguish warnings from unusable coverage.
-- Flood extent resampling and same-day item handling must be matched explicitly
-  in the Earth Engine implementation.
+- Flood extent resampling and the UTC calendar-day mosaic must be matched
+  explicitly in the Earth Engine implementation.
 
 ## Limitations to resolve
 

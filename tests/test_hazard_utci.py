@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from wia_pipelines.hazards.utci import (
+    UtciPipelineRunOptions,
     UtciRunInputs,
     build_utci_run_context,
 )
@@ -25,6 +26,10 @@ class UtciHazardTests(unittest.TestCase):
             )
             self.assertEqual(ctx["config"].hazard, "heat")
             self.assertTrue((ctx["layout"]["base"] / "run_metadata.json").exists())
+
+    def test_default_reporting_threshold_is_explicit(self) -> None:
+        fields = UtciPipelineRunOptions.__dataclass_fields__
+        self.assertEqual(fields["default_reporting_threshold_c"].default, 32.0)
 
 
 if __name__ == "__main__":

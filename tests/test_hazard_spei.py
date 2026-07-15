@@ -43,6 +43,7 @@ class SpeiWindowTests(unittest.TestCase):
             self.assertTrue(ctx["layout"]["base"].exists())
             self.assertTrue(ctx["metadata_path"].exists())
             self.assertEqual(ctx["metadata"]["run_config"]["hazard"], "drought")
+            self.assertEqual(ctx["layout"]["base"].parent.parent.name, "drought")
 
     def test_find_spei_var_ignores_non_spatial_preferred_name(self) -> None:
         ds = xr.Dataset(

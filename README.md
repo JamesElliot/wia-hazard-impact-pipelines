@@ -22,6 +22,8 @@ are examples and quality-control aids.
 
 Exact defaults, processing decisions, and limitations are documented under
 [`docs/indicators/`](docs/indicators/).
+The shared processing sequence and intentional cross-hazard differences are in
+[`docs/methodology-alignment.md`](docs/methodology-alignment.md).
 
 ## Repository layout
 

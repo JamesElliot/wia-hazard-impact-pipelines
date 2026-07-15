@@ -23,6 +23,21 @@
       "type": "string",
       "format": "date-time"
     },
+    "pipeline": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable implementation identifier. Emitted by all pipeline runs."
+    },
+    "method_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version of the affected-population method. Emitted by all pipeline runs."
+    },
+    "population_rule": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable affected-population rule. Emitted by all pipeline runs."
+    },
     "run_config": {
       "type": "object",
       "required": [

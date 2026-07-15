@@ -18,6 +18,7 @@ from shapely.ops import unary_union
 
 from ...config import RunConfig, initialize_run_metadata, validate_run_metadata
 from ...core.io_paths import append_artifact, build_run_layout, create_run_dirs
+from ...core.pipeline import hazard_method, standardize_admin_summary
 from ._version import __version__
 from .aggregate import aggregate_population
 from .config import config_hash, load_config
@@ -371,17 +372,15 @@ def run_pipeline(inputs: RunInputs) -> Path:
     table["flag_zero_population"] = table["pop_total"] <= 0
     table["run_id"] = run_id
 
-    table["iso3"] = iso3
-    table["admin_level"] = int(config["admin"]["level"])
-    table["admin_pcode"] = table[f"adm{int(config['admin']['level'])}_pcode"]
-    table["period_start"] = window.start.date().isoformat()
-    table["period_end"] = end_label
-    table["hazard"] = "cyclone"
-    table["method_version"] = __version__
-    table["population_total"] = table["pop_total"]
-    table["population_affected"] = table["pop_affected"]
-    table["hazard_data_coverage"] = np.nan
-    table["population_data_coverage"] = np.nan
+    table = standardize_admin_summary(
+        table,
+        config=run_config,
+        admin_level=int(config["admin"]["level"]),
+        admin_pcode_column=f"adm{int(config['admin']['level'])}_pcode",
+        population_total_column="pop_total",
+        population_affected_column="pop_affected",
+        pct_affected_column="pct_affected",
+    )
 
     csv_path = layout["tables"] / f"HI06_{iso3}_{end_label}.csv"
     storm_path = layout["qc"] / f"HI06_{iso3}_storms_{end_label}.csv"
@@ -508,8 +507,12 @@ def _manifest(
     if gdacs_audit_path and Path(gdacs_audit_path).exists():
         input_paths["gdacs_audit"] = Path(gdacs_audit_path)
     metadata = initialize_run_metadata(run_config, paths=layout)
+    method_definition = hazard_method("cyclone")
     metadata.update(
         {
+            "pipeline": method_definition.pipeline,
+            "method_version": method_definition.method_version,
+            "population_rule": method_definition.population_rule,
             "indicator": "HI-06",
             "pipeline_version": __version__,
             "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),

@@ -6,10 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..config import RunConfig, initialize_run_metadata, validate_run_metadata
+from ..config import RunConfig
 from ..core.admin import admin_bounds_hash, filter_admin_for_iso3, load_admin_layer
 from ..core.cds import months_for_last_n
-from ..core.io_paths import build_run_layout, create_run_dirs, write_json
+from ..core.pipeline import (
+    build_hazard_run_context,
+    record_artifact,
+    standardize_admin_summary,
+    sync_run_metadata,
+)
 from .coverage_checks import (
     check_worldpop_coverage,
     run_cds_single_month_check,
@@ -44,29 +49,7 @@ def build_utci_run_context(
     write_metadata: bool = True,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    layout = build_run_layout(
-        output_root=config.output_root,
-        hazard="heat",
-        iso3=config.iso3,
-        run_id=config.run_id,
-    )
-    if create_dirs:
-        create_run_dirs(layout)
-
-    metadata = initialize_run_metadata(config, paths=layout)
-    metadata["pipeline"] = "extreme_heat_utci"
-    validate_run_metadata(metadata)
-
-    metadata_path = layout["base"] / "run_metadata.json"
-    if write_metadata:
-        write_json(metadata_path, metadata)
-
-    return {
-        "config": config,
-        "layout": layout,
-        "metadata": metadata,
-        "metadata_path": metadata_path,
-    }
+    return build_hazard_run_context(config, create_dirs=create_dirs, write_metadata=write_metadata)
 
 
 @dataclass(frozen=True)
@@ -78,6 +61,7 @@ class UtciPipelineRunOptions:
     iso3_field: str = "iso3"
     cds_buffer_deg: float = 0.25
     abs_thresholds_c: tuple[float, ...] = (32.0, 38.0, 46.0)
+    default_reporting_threshold_c: float = 32.0
     k_consecutive_days: int = 3
     require_full_preflight_coverage: bool = True
 
@@ -88,8 +72,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _append_artifact(metadata: dict[str, Any], kind: str, path: Path, note: str = "") -> None:
-    metadata.setdefault("artifacts", [])
-    metadata["artifacts"].append({"kind": kind, "path": str(path), "notes": note})
+    record_artifact(metadata, kind, path, note)
 
 
 def _find_daily_max_utci(ds):
@@ -157,6 +140,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     from rasterio.features import rasterize
 
     from ..core.cds import download_cds, ensure_downloads, extract_zip_to_dir
+    from ..core.aggregation import labelled_sum
     from ..core.raster_ops import reproject_array_to_grid, write_array_geotiff
 
     inputs = options.inputs
@@ -175,8 +159,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     metadata_path = ctx["metadata_path"]
 
     def _sync() -> None:
-        validate_run_metadata(metadata)
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        sync_run_metadata(metadata, metadata_path)
 
     from ..core.admin import (
         admin_layer_label,
@@ -429,6 +412,12 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
 
     # Build thresholds.
     thresholds = {f"abs_{int(t)}c": float(t) for t in options.abs_thresholds_c}
+    default_threshold_key = f"abs_{int(options.default_reporting_threshold_c)}c"
+    if default_threshold_key not in thresholds:
+        raise ValueError(
+            "default_reporting_threshold_c must be present in abs_thresholds_c; "
+            f"got {options.default_reporting_threshold_c} and {options.abs_thresholds_c}"
+        )
     k = int(options.k_consecutive_days)
     mask_native_dir = layout["rasters"] / "masks_native"
     mask_wp_dir = layout["rasters"] / "masks_worldpop"
@@ -523,24 +512,17 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         transform=wp_transform,
         fill=0,
         dtype="int32",
-        all_touched=True,
+        all_touched=False,
     )
-    flat_ids = admin_id.ravel()
-    flat_pop = wp_arr.ravel()
-    flat_pop_ok = pop_valid.ravel()
-    valid = (flat_ids > 0) & flat_pop_ok
-    ids_valid = flat_ids[valid]
-    pop_valid_vals = flat_pop[valid]
-    pop_total_by_id = np.bincount(ids_valid, weights=pop_valid_vals, minlength=len(admin_units_wp) + 1)
+    n_admin = len(admin_units_wp)
+    pop_total_by_id = labelled_sum(admin_id, wp_arr, n_labels=n_admin, valid_mask=pop_valid)
     out = pd.DataFrame(
         {
             pcode_label: admin_units_wp[pcode_label].values,
-            "admin_id": np.arange(1, len(admin_units_wp) + 1, dtype=int),
+            "admin_id": np.arange(1, n_admin + 1, dtype=int),
         }
     )
-    out["pop_total"] = out["admin_id"].map(
-        lambda ii: float(pop_total_by_id[ii]) if ii < len(pop_total_by_id) else 0.0
-    )
+    out["pop_total"] = pop_total_by_id
     for thr_name in thresholds.keys():
         pop_path = pop_exposed_dir / f"pop_affected_{thr_name}.tif"
         with rasterio.open(pop_path) as src:
@@ -550,15 +532,25 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         if nod is not None:
             ok &= arr != float(nod)
         ok &= arr >= 0
-        flat_arr = arr.ravel()
-        valid_arr = valid & ok.ravel()
-        ids2 = flat_ids[valid_arr]
-        vals2 = flat_arr[valid_arr]
-        pop_by_id = np.bincount(ids2, weights=vals2, minlength=len(admin_units_wp) + 1)
+        pop_by_id = labelled_sum(
+            admin_id,
+            arr,
+            n_labels=n_admin,
+            valid_mask=pop_valid & ok,
+        )
         pcol = f"pop_exposed_{thr_name}"
         ccol = f"pct_exposed_{thr_name}"
-        out[pcol] = out["admin_id"].map(lambda ii: float(pop_by_id[ii]) if ii < len(pop_by_id) else 0.0)
+        out[pcol] = pop_by_id
         out[ccol] = np.where(out["pop_total"] > 0, (out[pcol] / out["pop_total"]) * 100.0, np.nan)
+    out = standardize_admin_summary(
+        out,
+        config=config,
+        admin_level=adm_level,
+        admin_pcode_column=pcode_label,
+        population_total_column="pop_total",
+        population_affected_column=f"pop_exposed_{default_threshold_key}",
+        pct_affected_column=f"pct_exposed_{default_threshold_key}",
+    )
     out_csv = layout["tables"] / f"{iso3}_{admin_label}_extreme_heat_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     _append_artifact(metadata, "admin_heat_table", out_csv, f"{admin_label.title()} UTCI exposure table")
@@ -600,6 +592,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     metadata["extreme_heat_masks"] = {
         "k_consecutive_days": int(k),
         "thresholds_c": thresholds,
+        "default_reporting_threshold_key": default_threshold_key,
         "results_summary": results_summary,
         "progress_status_path": str(raster_status),
     }

@@ -12,11 +12,28 @@ from wia_pipelines.hazards.flood import (
     build_flood_run_context,
     evaluate_preflight_coverage,
     flood_binary_from_days,
+    group_stac_items_by_day,
     make_progress_writer,
 )
 
 
 class FloodHazardTests(unittest.TestCase):
+    def test_group_stac_items_by_day(self) -> None:
+        class Item:
+            def __init__(self, item_id: str, timestamp: str) -> None:
+                self.id = item_id
+                self.properties = {"datetime": timestamp}
+
+        grouped = group_stac_items_by_day(
+            [
+                Item("b", "2025-01-02T18:00:00Z"),
+                Item("a", "2025-01-01T06:00:00Z"),
+                Item("c", "2025-01-02T05:00:00Z"),
+            ]
+        )
+        self.assertEqual(list(grouped), ["2025-01-01", "2025-01-02"])
+        self.assertEqual([item.id for item in grouped["2025-01-02"]], ["b", "c"])
+
     def test_build_flood_run_context(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ctx = build_flood_run_context(

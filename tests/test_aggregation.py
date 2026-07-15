@@ -3,13 +3,21 @@ from __future__ import annotations
 import importlib.util
 import unittest
 
-from wia_pipelines.core.aggregation import zonal_sum
+from wia_pipelines.core.aggregation import labelled_sum, zonal_sum
 
 HAS_AGG = all(importlib.util.find_spec(m) is not None for m in ("rasterio", "numpy", "shapely"))
 
 
 @unittest.skipUnless(HAS_AGG, "aggregation dependencies not installed")
 class AggregationTests(unittest.TestCase):
+    def test_labelled_sum_applies_shared_validity_mask(self) -> None:
+        import numpy as np
+
+        labels = np.array([[1, 1, 2], [1, 2, 0]], dtype="int16")
+        values = np.array([[1.0, 2.0, 3.0], [4.0, np.nan, 99.0]])
+        valid = np.array([[True, False, True], [True, True, True]])
+        self.assertEqual(labelled_sum(labels, values, n_labels=2, valid_mask=valid), [5.0, 3.0])
+
     def test_zonal_sum(self) -> None:
         import numpy as np
         from rasterio.transform import from_origin

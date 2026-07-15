@@ -12,8 +12,9 @@ logs/
 run_metadata.json
 ```
 
-Hazard modules currently retain some compatibility filenames. The shared
-contract below is the target for both Python and Google Earth Engine outputs.
+Hazard modules retain compatibility filenames and columns, but every Python
+pipeline now also emits the shared contract below. Google Earth Engine outputs
+must provide the same canonical fields.
 
 ## Administrative summary fields
 
@@ -33,8 +34,11 @@ contract below is the target for both Python and Google Earth Engine outputs.
 | `population_data_coverage` | Share of the administrative area covered by the population grid |
 
 Hazard-specific severity columns are allowed, but their units and denominator
-must be documented. Existing hazard-specific column names will be normalized
-to this contract in a later compatibility release.
+must be documented. Existing hazard-specific names such as `pop_total`,
+`pop_affected_flood`, and `pct_exposed_abs32c` remain as compatibility aliases.
+For multi-threshold hazards, the canonical `population_affected` and
+`pct_affected` fields use the documented reporting threshold; all threshold
+columns remain available.
 
 ## Raster requirements
 
@@ -54,6 +58,8 @@ is explicitly part of the indicator definition.
 ## Metadata
 
 `run_metadata.json` is validated against
-`schemas/run_metadata.schema.json`. It records run parameters, canonical paths,
-and emitted artifacts. Dataset provenance and method-version fields will be
-made mandatory before the first stable release.
+`schemas/run_metadata.schema.json`. Pipeline runs record run parameters,
+canonical paths, emitted artifacts, stable pipeline and method-version IDs, and
+the affected-population rule. Dataset-specific provenance remains mandatory for
+production publication even where an upstream source cannot expose it
+programmatically.

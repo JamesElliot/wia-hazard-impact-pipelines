@@ -4,7 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
-from .config import RunConfig, build_run_paths, initialize_run_metadata, validate_run_metadata
+from .config import RunConfig, validate_run_metadata
+from .core.pipeline import build_hazard_run_context
 
 
 def _cmd_init_run(args: argparse.Namespace) -> int:
@@ -17,13 +18,12 @@ def _cmd_init_run(args: argparse.Namespace) -> int:
         target_adm_level=args.target_adm_level,
         buffer_km=args.buffer_km,
     )
-    paths = build_run_paths(config)
-    if args.create_dirs:
-        for path in paths.values():
-            path.mkdir(parents=True, exist_ok=True)
-
-    metadata = initialize_run_metadata(config, paths=paths)
-    validate_run_metadata(metadata)
+    context = build_hazard_run_context(
+        config,
+        create_dirs=bool(args.create_dirs),
+        write_metadata=False,
+    )
+    metadata = context["metadata"]
     print(json.dumps(metadata, indent=2))
     return 0
 
