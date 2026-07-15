@@ -1,0 +1,31 @@
+pipeline:
+  indicator: HI-EQ
+  version: "0.1.0"
+temporal:
+  window_months: 12
+discovery:
+  catalog_url: https://earthquake.usgs.gov/fdsnws/event/1/query
+  country_buffer_km: 500
+  timeout_seconds: 120
+shaking:
+  primary_threshold_mmi: 6.0
+  sensitivity_thresholds_mmi: [5.0, 6.0, 7.0]
+  continuous_resampling: bilinear
+population:
+  all_touched: false
+  max_unassigned_fraction: 0.02
+admin:
+  level: 2
+  layer: null
+  all_touched: false
+  fields:
+    adm0_pcode: ADM0_PCODE
+    adm1_pcode: ADM1_PCODE
+    adm2_pcode: ADM2_PCODE
+    adm2_name_en: ADM2_EN
+    adm2_name_local: ADM2_REF
+    iso3: ISO3
+outputs:
+  write_maximum_mmi: true
+  write_masks: true
+  write_maps: true

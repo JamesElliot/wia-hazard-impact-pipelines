@@ -750,6 +750,40 @@ def _cmd_run_cyclone(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_earthquake(args: argparse.Namespace) -> int:
+    from .hazards.earthquake.pipeline import RunInputs, run_pipeline, validate_inputs
+
+    inputs = RunInputs(
+        iso3=str(args.iso3).upper(),
+        window_end=args.as_of_date,
+        worldpop=Path(args.worldpop_path).expanduser().resolve(),
+        admin=Path(args.admin_path).expanduser().resolve(),
+        out=Path(args.output_root).expanduser().resolve(),
+        lookback_months=int(args.lookback_months),
+        config=Path(args.config).expanduser().resolve() if args.config else None,
+    )
+    payload = {
+        "pipeline": "earthquake",
+        "iso3": inputs.iso3,
+        "as_of_date": inputs.window_end,
+        "lookback_months": inputs.lookback_months,
+        "worldpop_path": str(inputs.worldpop),
+        "admin_path": str(inputs.admin),
+        "output_root": str(inputs.out),
+        "config": str(inputs.config) if inputs.config else None,
+    }
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+    elif args.validate_only:
+        payload["status"] = "VALID"
+        payload["validation"] = validate_inputs(inputs)
+    else:
+        payload["status"] = "SUCCESS"
+        payload["run_dir"] = str(run_pipeline(inputs))
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def _cmd_run_cyclone_bulk(args: argparse.Namespace) -> int:
     from .hazards.cyclone.bulk import run_bulk
 
@@ -1071,6 +1105,25 @@ def build_parser() -> argparse.ArgumentParser:
     run_cyclone.add_argument("--validate-only", action="store_true")
     run_cyclone.add_argument("--dry-run", action="store_true")
     run_cyclone.set_defaults(func=_cmd_run_cyclone)
+
+    run_earthquake = subparsers.add_parser(
+        "run-earthquake",
+        help="Run the HI-EQ pipeline from USGS ShakeMaps and WorldPop.",
+    )
+    run_earthquake.add_argument("--iso3", required=True)
+    run_earthquake.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
+    run_earthquake.add_argument("--lookback-months", type=int, default=12)
+    run_earthquake.add_argument("--worldpop-path", required=True)
+    run_earthquake.add_argument("--admin-path", required=True)
+    run_earthquake.add_argument("--output-root", default="./outputs")
+    run_earthquake.add_argument(
+        "--config",
+        default=None,
+        help="Optional YAML override for admin fields, thresholds, discovery, and outputs.",
+    )
+    run_earthquake.add_argument("--validate-only", action="store_true")
+    run_earthquake.add_argument("--dry-run", action="store_true")
+    run_earthquake.set_defaults(func=_cmd_run_earthquake)
 
     cyclone_bulk = subparsers.add_parser(
         "run-cyclone-bulk",

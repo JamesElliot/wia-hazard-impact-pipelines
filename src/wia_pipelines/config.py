@@ -9,7 +9,7 @@ from typing import Any
 import jsonschema
 
 
-SUPPORTED_HAZARDS = {"cyclone", "drought", "flood", "heat", "violence"}
+SUPPORTED_HAZARDS = {"cyclone", "drought", "earthquake", "flood", "heat", "violence"}
 
 
 def _validate_iso3(iso3: str) -> str:
