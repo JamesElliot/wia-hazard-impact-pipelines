@@ -17,3 +17,7 @@ The primary fields are:
 - `m49_code` when required for matching ACLED bulk exports
 
 Use `wia-hazards --help` for current single-run and batch command options.
+Single-run commands share default admin and WorldPop locations; cyclone also
+uses `data/cyclone/ibtracs.csv` or the newest IBTrACS-named CSV in that folder.
+Configuration files should therefore focus on methodology and field mappings,
+not repeat machine-specific paths.

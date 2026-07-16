@@ -17,6 +17,7 @@ import shapely
 from shapely.ops import unary_union
 
 from ...config import RunConfig, initialize_run_metadata, validate_run_metadata
+from ...core.assets import checksum_path, link_cached_asset, shared_cache_root
 from ...core.io_paths import append_artifact, build_run_layout, create_run_dirs
 from ...core.pipeline import hazard_method, standardize_admin_summary
 from ._version import __version__
@@ -44,30 +45,51 @@ class RunInputs:
     admin: Path
     out: Path
     lookback_months: int = 12
+    target_adm_level: int | None = None
+    admin_layer: str | None = None
     config: Path | None = None
     gdacs_footprints: Path | None = None
     gdacs_auto: bool = False
+    refresh_cache: bool = False
 
 
-def _checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    paths = sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else [path]
-    for item in paths:
-        if path.is_dir():
-            digest.update(str(item.relative_to(path)).encode())
-        with item.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
+def _configured(inputs: RunInputs) -> dict[str, Any]:
+    config = load_config(inputs.config)
+    config["temporal"]["window_months"] = int(inputs.lookback_months)
+    if inputs.target_adm_level is not None:
+        config["admin"]["level"] = int(inputs.target_adm_level)
+    if inputs.admin_layer is not None:
+        config["admin"]["layer"] = inputs.admin_layer
+    elif not config["admin"].get("layer") and str(inputs.admin).lower().endswith(".zip"):
+        config["admin"]["layer"] = f"admin{int(config['admin']['level'])}"
+    return config
+
+
+def _actual_column(columns, configured: str | None) -> str | None:
+    if not configured:
+        return None
+    if configured in columns:
+        return configured
+    by_lower = {str(column).lower(): str(column) for column in columns}
+    return by_lower.get(str(configured).lower())
 
 
 def _load_admin(path: Path, iso3: str, admin_config: dict[str, Any]) -> gpd.GeoDataFrame:
     fields = admin_config["fields"]
     level = int(admin_config["level"])
     read_kwargs = {"layer": admin_config["layer"]} if admin_config.get("layer") else {}
-    admin = gpd.read_file(path, **read_kwargs)
+    try:
+        admin = gpd.read_file(path, **read_kwargs)
+    except Exception:
+        if not read_kwargs:
+            raise
+        admin = gpd.read_file(path)
     if admin.empty or admin.crs is None:
         raise ValueError("Admin input must contain features and a declared CRS")
+    for key, configured in list(fields.items()):
+        actual = _actual_column(admin.columns, configured)
+        if actual is not None:
+            fields[key] = actual
     iso_field = fields.get("iso3")
     if iso_field in admin.columns:
         subset = admin.loc[admin[iso_field].astype(str).str.upper() == iso3.upper()].copy()
@@ -127,8 +149,7 @@ def _fallback_storm_ids(
 
 
 def validate_inputs(inputs: RunInputs) -> dict[str, Any]:
-    config = load_config(inputs.config)
-    config["temporal"]["window_months"] = int(inputs.lookback_months)
+    config = _configured(inputs)
     if inputs.gdacs_footprints and inputs.gdacs_auto:
         raise ValueError("Use either --gdacs-footprints or --gdacs-auto, not both")
     for path in (inputs.ibtracs, inputs.worldpop):
@@ -164,8 +185,7 @@ def validate_inputs(inputs: RunInputs) -> dict[str, Any]:
 
 
 def run_pipeline(inputs: RunInputs) -> Path:
-    config = load_config(inputs.config)
-    config["temporal"]["window_months"] = int(inputs.lookback_months)
+    config = _configured(inputs)
     iso3 = inputs.iso3.upper()
     window = rolling_window(inputs.window_end, int(config["temporal"]["window_months"]))
     end_label = pd.Timestamp(inputs.window_end).date().isoformat()
@@ -197,26 +217,54 @@ def run_pipeline(inputs: RunInputs) -> Path:
         raise ValueError("Use either --gdacs-footprints or --gdacs-auto, not both")
     gdacs_path = inputs.gdacs_footprints
     gdacs_audit_path = None
+    gdacs_cache_source = None
     gdacs = _load_gdacs(gdacs_path)
     if inputs.gdacs_auto:
         fallback_sids = _fallback_storm_ids(candidates, bands, minimum)
-        gdacs_path = layout["intermediate"] / f"HI06_{iso3}_gdacs_fallbacks_{end_label}.gpkg"
-        gdacs_audit_path = layout["qc"] / f"HI06_{iso3}_gdacs_audit_{end_label}.csv"
-        for stale_path in (gdacs_path, gdacs_audit_path):
-            if stale_path.exists():
-                stale_path.unlink()
         if fallback_sids:
-            fetch_result = fetch_gdacs_fallbacks(
-                candidates.loc[candidates["SID"].astype(str).isin(fallback_sids)],
-                window,
-                gdacs_path,
-                gdacs_audit_path,
+            cache_payload = json.dumps(
+                {
+                    "window_start": window.start.date().isoformat(),
+                    "window_end": window.end.date().isoformat(),
+                    "storm_ids": sorted(fallback_sids),
+                },
+                sort_keys=True,
             )
-            gdacs = fetch_result.footprints
+            cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:20]
+            cache_root = shared_cache_root(inputs.out, "gdacs") / "fallbacks"
+            cache_root.mkdir(parents=True, exist_ok=True)
+            cached_footprints = cache_root / f"{cache_key}.gpkg"
+            cached_audit = cache_root / f"{cache_key}.csv"
+            gdacs_path = layout["intermediate"] / f"HI06_{iso3}_gdacs_fallbacks_{end_label}.gpkg"
+            gdacs_audit_path = layout["qc"] / f"HI06_{iso3}_gdacs_audit_{end_label}.csv"
+            # The audit file is also the cache marker for a valid response with
+            # no usable wind-buffer polygons.
+            cache_complete = cached_audit.exists()
+            if cache_complete and not inputs.refresh_cache:
+                gdacs = _load_gdacs(cached_footprints) if cached_footprints.exists() else None
+                gdacs_cache_source = "cache"
+            else:
+                if inputs.refresh_cache:
+                    for cached_path in (cached_footprints, cached_audit):
+                        if cached_path.exists():
+                            cached_path.unlink()
+                fetch_result = fetch_gdacs_fallbacks(
+                    candidates.loc[candidates["SID"].astype(str).isin(fallback_sids)],
+                    window,
+                    cached_footprints,
+                    cached_audit,
+                )
+                gdacs = fetch_result.footprints
+                gdacs_cache_source = "download"
+            if cached_footprints.exists():
+                link_cached_asset(cached_footprints, gdacs_path)
+            if cached_audit.exists():
+                link_cached_asset(cached_audit, gdacs_audit_path)
         else:
             gdacs = None
             gdacs_path = None
             gdacs_audit_path = None
+            gdacs_cache_source = "not_required"
 
     footprint_rows = []
     audit_rows = []
@@ -452,6 +500,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
         gdacs_path if gdacs_path and Path(gdacs_path).exists() else None,
         gdacs_audit_path,
         artifact_paths,
+        gdacs_cache_source,
     )
     manifest_path = output_dir / "run_metadata.json"
     validate_run_metadata(manifest)
@@ -496,6 +545,7 @@ def _manifest(
     gdacs_path=None,
     gdacs_audit_path=None,
     artifact_paths=None,
+    gdacs_cache_source=None,
 ):
     input_paths = {
         "ibtracs": Path(inputs.ibtracs),
@@ -528,7 +578,7 @@ def _manifest(
             "config": config,
             "config_hash": config_hash(config),
             "inputs": {
-                key: {"path": str(path.resolve()), "sha256": _checksum(path)}
+                key: {"path": str(path.resolve()), "sha256": checksum_path(path)}
                 for key, path in input_paths.items()
             },
             "qa": {
@@ -542,6 +592,7 @@ def _manifest(
                     if inputs.gdacs_auto
                     else "not_run_local_pipeline"
                 ),
+                "gdacs_asset_source": gdacs_cache_source,
                 "applicability_gate": "not_run_upstream_required",
             },
             "software": {

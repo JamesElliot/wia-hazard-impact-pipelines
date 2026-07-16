@@ -31,6 +31,12 @@ HAZARD_METHODS: dict[str, HazardMethod] = {
         method_version="0.1.0",
         population_rule="WorldPop cells with SPEI3 at or below the reporting threshold in any month",
     ),
+    "earthquake": HazardMethod(
+        hazard="earthquake",
+        pipeline="earthquake_usgs_shakemap",
+        method_version="0.1.0",
+        population_rule="WorldPop cells whose maximum USGS ShakeMap intensity reaches MMI VI",
+    ),
     "flood": HazardMethod(
         hazard="flood",
         pipeline="gfm_flood",

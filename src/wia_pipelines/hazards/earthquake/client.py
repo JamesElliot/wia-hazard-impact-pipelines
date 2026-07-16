@@ -124,9 +124,15 @@ def parse_grid_xml(data: bytes) -> ShakeGrid:
     )
 
 
-def download_cached(url: str, path: Path, timeout_seconds: int = 120) -> dict[str, Any]:
+def download_cached(
+    url: str,
+    path: Path,
+    timeout_seconds: int = 120,
+    *,
+    refresh: bool = False,
+) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size > 0:
+    if path.exists() and path.stat().st_size > 0 and not refresh:
         data = path.read_bytes()
         source = "cache"
     else:
@@ -140,3 +146,14 @@ def download_cached(url: str, path: Path, timeout_seconds: int = 120) -> dict[st
         "sha256": hashlib.sha256(data).hexdigest(),
         "retrieved_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
     }
+
+
+def fetch_json_cached(
+    url: str,
+    path: Path,
+    timeout_seconds: int = 120,
+    *,
+    refresh: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    result = download_cached(url, path, timeout_seconds, refresh=refresh)
+    return json.loads(Path(result["path"]).read_text(encoding="utf-8")), result

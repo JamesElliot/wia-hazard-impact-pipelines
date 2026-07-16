@@ -29,6 +29,12 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(args.func(args), 0)
 
+    def test_cyclone_and_earthquake_share_minimal_run_arguments(self) -> None:
+        parser = build_parser()
+        for command in ("run-cyclone", "run-earthquake"):
+            args = parser.parse_args([command, "--iso3", "MOZ", "--as-of-date", "2026-03-31", "--dry-run"])
+            self.assertEqual(args.func(args), 0)
+
     def test_init_run_command_executes(self) -> None:
         parser = build_parser()
         args = parser.parse_args(

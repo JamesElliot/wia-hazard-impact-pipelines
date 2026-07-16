@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import platform
 from dataclasses import dataclass
@@ -19,13 +18,15 @@ from shapely.geometry import box, mapping
 
 from ...config import RunConfig, initialize_run_metadata, validate_run_metadata
 from ...core.admin import build_admin_aoi
+from ...core.assets import checksum_path, link_cached_asset, shared_cache_root, url_cache_key
 from ...core.io_paths import append_artifact, build_run_layout, create_run_dirs
+from ...core.pipeline import hazard_method, standardize_admin_summary
 from ...core.raster_ops import reproject_array_to_grid, write_array_geotiff
 from ._version import __version__
 from .client import (
     build_catalog_url,
     download_cached,
-    fetch_json,
+    fetch_json_cached,
     is_actual_event,
     parse_grid_xml,
     select_grid_content,
@@ -43,24 +44,48 @@ class RunInputs:
     admin: Path
     out: Path
     lookback_months: int = 12
+    target_adm_level: int | None = None
+    admin_layer: str | None = None
     config: Path | None = None
+    refresh_cache: bool = False
 
 
-def _checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _configured(inputs: RunInputs) -> dict[str, Any]:
+    config = load_config(inputs.config)
+    config["temporal"]["window_months"] = int(inputs.lookback_months)
+    if inputs.target_adm_level is not None:
+        config["admin"]["level"] = int(inputs.target_adm_level)
+    if inputs.admin_layer is not None:
+        config["admin"]["layer"] = inputs.admin_layer
+    elif not config["admin"].get("layer") and str(inputs.admin).lower().endswith(".zip"):
+        config["admin"]["layer"] = f"admin{int(config['admin']['level'])}"
+    return config
+
+
+def _actual_column(columns, configured: str | None) -> str | None:
+    if not configured:
+        return None
+    if configured in columns:
+        return configured
+    return {str(column).lower(): str(column) for column in columns}.get(str(configured).lower())
 
 
 def _load_admin(path: Path, iso3: str, config: dict[str, Any]) -> gpd.GeoDataFrame:
     level = int(config["level"])
     fields = config["fields"]
     kwargs = {"layer": config["layer"]} if config.get("layer") else {}
-    admin = gpd.read_file(path, **kwargs)
+    try:
+        admin = gpd.read_file(path, **kwargs)
+    except Exception:
+        if not kwargs:
+            raise
+        admin = gpd.read_file(path)
     if admin.empty or admin.crs is None:
         raise ValueError("Admin input must contain features and a declared CRS")
+    for key, configured in list(fields.items()):
+        actual = _actual_column(admin.columns, configured)
+        if actual is not None:
+            fields[key] = actual
     iso_field = fields.get("iso3")
     if iso_field in admin.columns:
         admin = admin.loc[admin[iso_field].astype(str).str.upper() == iso3.upper()].copy()
@@ -80,8 +105,7 @@ def _load_admin(path: Path, iso3: str, config: dict[str, Any]) -> gpd.GeoDataFra
 
 
 def validate_inputs(inputs: RunInputs) -> dict[str, Any]:
-    config = load_config(inputs.config)
-    config["temporal"]["window_months"] = int(inputs.lookback_months)
+    config = _configured(inputs)
     for path in (inputs.worldpop, inputs.admin):
         if not Path(path).exists():
             raise FileNotFoundError(path)
@@ -123,8 +147,7 @@ def _annual_maximum(current: np.ndarray, candidate: np.ndarray) -> None:
 
 
 def run_pipeline(inputs: RunInputs) -> Path:
-    config = load_config(inputs.config)
-    config["temporal"]["window_months"] = int(inputs.lookback_months)
+    config = _configured(inputs)
     run = RunConfig(
         hazard="earthquake",
         iso3=inputs.iso3,
@@ -158,9 +181,16 @@ def run_pipeline(inputs: RunInputs) -> Path:
         aoi["aoi_bounds"],
         discovery["catalog_url"],
     )
-    catalog = fetch_json(catalog_url, int(discovery["timeout_seconds"]))
+    usgs_cache = shared_cache_root(inputs.out, "usgs")
+    catalog_cache_path = usgs_cache / "catalogues" / f"{url_cache_key(catalog_url)}.geojson"
+    catalog, catalog_fetch = fetch_json_cached(
+        catalog_url,
+        catalog_cache_path,
+        int(discovery["timeout_seconds"]),
+        refresh=inputs.refresh_cache,
+    )
     catalog_path = layout["raw"] / "usgs_catalogue.geojson"
-    catalog_path.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    link_cached_asset(catalog_cache_path, catalog_path)
 
     primary = float(config["shaking"]["primary_threshold_mmi"])
     thresholds = tuple(float(value) for value in config["shaking"]["sensitivity_thresholds_mmi"])
@@ -198,10 +228,16 @@ def run_pipeline(inputs: RunInputs) -> Path:
             row["exclusion_reason"] = "missing_event_detail_url"
             event_rows.append(row)
             continue
-        detail = fetch_json(str(detail_url), int(discovery["timeout_seconds"]))
+        detail_cache_path = usgs_cache / "events" / event_id / f"detail_{url_cache_key(str(detail_url))}.json"
+        detail, detail_fetch = fetch_json_cached(
+            str(detail_url),
+            detail_cache_path,
+            int(discovery["timeout_seconds"]),
+            refresh=inputs.refresh_cache,
+        )
         event_dir = layout["raw"] / "event_products" / event_id
         event_dir.mkdir(parents=True, exist_ok=True)
-        (event_dir / "detail.json").write_text(json.dumps(detail, indent=2) + "\n", encoding="utf-8")
+        link_cached_asset(detail_cache_path, event_dir / "detail.json")
         product = select_shakemap_product(detail)
         selected = None if product is None else select_grid_content(product)
         if selected is None or not selected[0].lower().endswith("grid.xml"):
@@ -213,8 +249,14 @@ def run_pipeline(inputs: RunInputs) -> Path:
             row["exclusion_reason"] = "grid_missing_url"
             event_rows.append(row)
             continue
-        grid_path = event_dir / "grid.xml"
-        downloaded = download_cached(str(content["url"]), grid_path, int(discovery["timeout_seconds"]))
+        grid_cache_path = usgs_cache / "shakemaps" / f"{url_cache_key(str(content['url']))}.xml"
+        downloaded = download_cached(
+            str(content["url"]),
+            grid_cache_path,
+            int(discovery["timeout_seconds"]),
+            refresh=inputs.refresh_cache,
+        )
+        grid_path = link_cached_asset(grid_cache_path, event_dir / "grid.xml")
         grid = parse_grid_xml(grid_path.read_bytes())
         bounds = rasterio.transform.array_bounds(grid.mmi.shape[0], grid.mmi.shape[1], grid.transform)
         if not box(*bounds).intersects(country_geometry):
@@ -248,6 +290,8 @@ def run_pipeline(inputs: RunInputs) -> Path:
             product_content=content_name,
             product_url=content["url"],
             sha256=downloaded["sha256"],
+            detail_asset_source=detail_fetch["source"],
+            grid_asset_source=downloaded["source"],
         )
         event_rows.append(row)
 
@@ -304,17 +348,15 @@ def run_pipeline(inputs: RunInputs) -> Path:
     table["flag_zero_population"] = table["pop_total"] <= 0
     table["flag_no_qualifying_events"] = included == 0
     table["run_id"] = run.run_id
-    table["iso3"] = run.iso3
-    table["admin_level"] = level
-    table["admin_pcode"] = table[f"adm{level}_pcode"]
-    table["period_start"] = run.window_start.isoformat()
-    table["period_end"] = end_label
-    table["hazard"] = "earthquake"
-    table["method_version"] = __version__
-    table["population_total"] = table["pop_total"]
-    table["population_affected"] = table["pop_affected"]
-    table["hazard_data_coverage"] = np.nan
-    table["population_data_coverage"] = np.nan
+    table = standardize_admin_summary(
+        table,
+        config=run,
+        admin_level=level,
+        admin_pcode_column=f"adm{level}_pcode",
+        population_total_column="pop_total",
+        population_affected_column="pop_affected",
+        pct_affected_column="pct_affected",
+    )
 
     table_path = layout["tables"] / f"HIEQ_{run.iso3}_{end_label}.csv"
     event_path = layout["qc"] / f"HIEQ_{run.iso3}_events_{end_label}.csv"
@@ -339,8 +381,12 @@ def run_pipeline(inputs: RunInputs) -> Path:
         )
 
     metadata = initialize_run_metadata(run, paths=layout)
+    method_definition = hazard_method("earthquake")
     metadata.update(
         {
+            "pipeline": method_definition.pipeline,
+            "method_version": method_definition.method_version,
+            "population_rule": method_definition.population_rule,
             "indicator": "HI-EQ",
             "pipeline_version": __version__,
             "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -356,14 +402,23 @@ def run_pipeline(inputs: RunInputs) -> Path:
             "config": config,
             "config_hash": config_hash(config),
             "inputs": {
-                "worldpop": {"path": str(inputs.worldpop.resolve()), "sha256": _checksum(inputs.worldpop)},
-                "admin": {"path": str(inputs.admin.resolve()), "sha256": _checksum(inputs.admin)},
-                "usgs_catalogue": {"query_url": catalog_url, "retrieved_path": str(catalog_path)},
+                "worldpop": {
+                    "path": str(inputs.worldpop.resolve()),
+                    "sha256": checksum_path(inputs.worldpop),
+                },
+                "admin": {"path": str(inputs.admin.resolve()), "sha256": checksum_path(inputs.admin)},
+                "usgs_catalogue": {
+                    "query_url": catalog_url,
+                    "retrieved_path": str(catalog_path),
+                    "cache_path": str(catalog_cache_path),
+                    "asset_source": catalog_fetch["source"],
+                },
             },
             "qa": {
                 "events_considered": len(event_rows),
                 "events_included": included,
                 "zero_event_result": included == 0,
+                "refresh_cache": inputs.refresh_cache,
             },
             "software": {
                 "python": platform.python_version(),

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .config import RunConfig, validate_run_metadata
+from .core.assets import resolve_admin_path, resolve_ibtracs_path, resolve_worldpop_path
 from .core.pipeline import build_hazard_run_context
 
 
@@ -460,6 +461,8 @@ def _cmd_run_violence(args: argparse.Namespace) -> int:
     from .hazards.violence import ViolenceRunInputs, run_violence_pipeline
 
     included = args.included_event_type if args.included_event_type else None
+    worldpop_path = resolve_worldpop_path(args.iso3, args.worldpop_path, args.worldpop_dir)
+    admin_path = resolve_admin_path(args.admin_path)
     inputs = ViolenceRunInputs(
         iso3=args.iso3,
         as_of_date=args.as_of_date,
@@ -475,9 +478,9 @@ def _cmd_run_violence(args: argparse.Namespace) -> int:
             "as_of_date": args.as_of_date,
             "lookback_months": args.lookback_months,
             "output_root": str(Path(args.output_root).expanduser().resolve()),
-            "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+            "admin_path": str(admin_path),
             "admin_layer": args.admin_layer,
-            "worldpop_path": str(Path(args.worldpop_path).expanduser().resolve()),
+            "worldpop_path": str(worldpop_path),
             "acled_csv": None if args.acled_csv is None else str(Path(args.acled_csv).expanduser().resolve()),
             "included_event_types": included,
             "worldpop_coverage_min_pct": args.worldpop_coverage_min_pct,
@@ -489,8 +492,8 @@ def _cmd_run_violence(args: argparse.Namespace) -> int:
 
     summary = run_violence_pipeline(
         inputs=inputs,
-        admin_path=Path(args.admin_path).expanduser().resolve(),
-        worldpop_path=Path(args.worldpop_path).expanduser().resolve(),
+        admin_path=admin_path,
+        worldpop_path=worldpop_path,
         acled_csv=None if args.acled_csv is None else Path(args.acled_csv).expanduser().resolve(),
         admin_layer=args.admin_layer,
         included_event_types=included,
@@ -538,15 +541,10 @@ def _run_notebook_pipeline(
 
 
 def _cmd_run_spei(args: argparse.Namespace) -> int:
-    from .batch.readiness import worldpop_path_for_iso3
     from .hazards.spei import SpeiPipelineRunOptions, SpeiRunInputs, run_spei_pipeline
 
     iso3 = str(args.iso3).upper()
-    worldpop_path = (
-        Path(args.worldpop_path).expanduser().resolve()
-        if args.worldpop_path
-        else worldpop_path_for_iso3(iso3, Path(args.worldpop_dir).expanduser().resolve())
-    )
+    worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
     payload = {
         "pipeline": "spei",
         "iso3": iso3,
@@ -589,15 +587,10 @@ def _cmd_run_spei(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_utci(args: argparse.Namespace) -> int:
-    from .batch.readiness import worldpop_path_for_iso3
     from .hazards.utci import UtciPipelineRunOptions, UtciRunInputs, run_utci_pipeline
 
     iso3 = str(args.iso3).upper()
-    worldpop_path = (
-        Path(args.worldpop_path).expanduser().resolve()
-        if args.worldpop_path
-        else worldpop_path_for_iso3(iso3, Path(args.worldpop_dir).expanduser().resolve())
-    )
+    worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
     thresholds = tuple(args.abs_threshold_c) if args.abs_threshold_c else (32.0, 38.0, 46.0)
     payload = {
         "pipeline": "utci",
@@ -644,15 +637,10 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_flood(args: argparse.Namespace) -> int:
-    from .batch.readiness import worldpop_path_for_iso3
     from .hazards.flood import FloodPipelineRunOptions, FloodRunInputs, run_flood_pipeline
 
     iso3 = str(args.iso3).upper()
-    worldpop_path = (
-        Path(args.worldpop_path).expanduser().resolve()
-        if args.worldpop_path
-        else worldpop_path_for_iso3(iso3, Path(args.worldpop_dir).expanduser().resolve())
-    )
+    worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
     payload = {
         "pipeline": "flood",
         "iso3": iso3,
@@ -715,28 +703,34 @@ def _cmd_run_cyclone(args: argparse.Namespace) -> int:
     inputs = RunInputs(
         iso3=str(args.iso3).upper(),
         window_end=args.as_of_date,
-        ibtracs=Path(args.ibtracs_path).expanduser().resolve(),
-        worldpop=Path(args.worldpop_path).expanduser().resolve(),
-        admin=Path(args.admin_path).expanduser().resolve(),
+        ibtracs=resolve_ibtracs_path(args.ibtracs_path, args.ibtracs_dir),
+        worldpop=resolve_worldpop_path(args.iso3, args.worldpop_path, args.worldpop_dir),
+        admin=resolve_admin_path(args.admin_path),
         out=Path(args.output_root).expanduser().resolve(),
         lookback_months=int(args.lookback_months),
+        target_adm_level=args.target_adm_level,
+        admin_layer=args.admin_layer,
         config=Path(args.config).expanduser().resolve() if args.config else None,
         gdacs_footprints=(
             Path(args.gdacs_footprints).expanduser().resolve() if args.gdacs_footprints else None
         ),
         gdacs_auto=bool(args.gdacs_auto),
+        refresh_cache=bool(args.refresh_cache),
     )
     payload = {
         "pipeline": "cyclone",
         "iso3": inputs.iso3,
         "as_of_date": inputs.window_end,
         "lookback_months": inputs.lookback_months,
+        "target_adm_level": inputs.target_adm_level,
+        "admin_layer": inputs.admin_layer,
         "ibtracs_path": str(inputs.ibtracs),
         "worldpop_path": str(inputs.worldpop),
         "admin_path": str(inputs.admin),
         "output_root": str(inputs.out),
         "config": str(inputs.config) if inputs.config else None,
         "gdacs_auto": inputs.gdacs_auto,
+        "refresh_cache": inputs.refresh_cache,
     }
     if args.dry_run:
         payload["status"] = "DRY_RUN"
@@ -756,21 +750,27 @@ def _cmd_run_earthquake(args: argparse.Namespace) -> int:
     inputs = RunInputs(
         iso3=str(args.iso3).upper(),
         window_end=args.as_of_date,
-        worldpop=Path(args.worldpop_path).expanduser().resolve(),
-        admin=Path(args.admin_path).expanduser().resolve(),
+        worldpop=resolve_worldpop_path(args.iso3, args.worldpop_path, args.worldpop_dir),
+        admin=resolve_admin_path(args.admin_path),
         out=Path(args.output_root).expanduser().resolve(),
         lookback_months=int(args.lookback_months),
+        target_adm_level=args.target_adm_level,
+        admin_layer=args.admin_layer,
         config=Path(args.config).expanduser().resolve() if args.config else None,
+        refresh_cache=bool(args.refresh_cache),
     )
     payload = {
         "pipeline": "earthquake",
         "iso3": inputs.iso3,
         "as_of_date": inputs.window_end,
         "lookback_months": inputs.lookback_months,
+        "target_adm_level": inputs.target_adm_level,
+        "admin_layer": inputs.admin_layer,
         "worldpop_path": str(inputs.worldpop),
         "admin_path": str(inputs.admin),
         "output_root": str(inputs.out),
         "config": str(inputs.config) if inputs.config else None,
+        "refresh_cache": inputs.refresh_cache,
     }
     if args.dry_run:
         payload["status"] = "DRY_RUN"
@@ -789,8 +789,8 @@ def _cmd_run_cyclone_bulk(args: argparse.Namespace) -> int:
 
     summary = run_bulk(
         Path(args.countries).expanduser().resolve(),
-        Path(args.ibtracs_path).expanduser().resolve(),
-        Path(args.admin_archive).expanduser().resolve(),
+        resolve_ibtracs_path(args.ibtracs_path, args.inputs_dir),
+        resolve_admin_path(args.admin_archive),
         [Path(path).expanduser().resolve() for path in args.worldpop_dir],
         Path(args.worldpop_download_dir).expanduser().resolve(),
         Path(args.inputs_dir).expanduser().resolve(),
@@ -983,9 +983,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_violence.add_argument("--lookback-months", type=int, default=12)
     run_violence.add_argument("--output-root", default="./outputs")
     run_violence.add_argument("--target-adm-level", type=int, default=2)
-    run_violence.add_argument("--admin-path", required=True)
+    run_violence.add_argument(
+        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
+    )
     run_violence.add_argument("--admin-layer", default="admin2")
-    run_violence.add_argument("--worldpop-path", required=True)
+    run_violence.add_argument("--worldpop-path", default=None)
+    run_violence.add_argument("--worldpop-dir", default="./data/population")
     run_violence.add_argument("--acled-csv", default=None)
     run_violence.add_argument(
         "--included-event-type",
@@ -1087,9 +1090,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_cyclone.add_argument("--iso3", required=True)
     run_cyclone.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
     run_cyclone.add_argument("--lookback-months", type=int, default=12)
-    run_cyclone.add_argument("--ibtracs-path", required=True)
-    run_cyclone.add_argument("--worldpop-path", required=True)
-    run_cyclone.add_argument("--admin-path", required=True)
+    run_cyclone.add_argument("--ibtracs-path", default=None)
+    run_cyclone.add_argument("--ibtracs-dir", default="./data/cyclone")
+    run_cyclone.add_argument("--worldpop-path", default=None)
+    run_cyclone.add_argument("--worldpop-dir", default="./data/population")
+    run_cyclone.add_argument(
+        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
+    )
+    run_cyclone.add_argument("--target-adm-level", type=int, default=None)
+    run_cyclone.add_argument("--admin-layer", default=None)
     run_cyclone.add_argument("--output-root", default="./outputs")
     run_cyclone.add_argument(
         "--config",
@@ -1103,6 +1112,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch GDACS buffers only for storms with inadequate IBTrACS wind radii.",
     )
     run_cyclone.add_argument("--validate-only", action="store_true")
+    run_cyclone.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Refresh reusable GDACS responses instead of using the shared cache.",
+    )
     run_cyclone.add_argument("--dry-run", action="store_true")
     run_cyclone.set_defaults(func=_cmd_run_cyclone)
 
@@ -1113,8 +1127,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_earthquake.add_argument("--iso3", required=True)
     run_earthquake.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
     run_earthquake.add_argument("--lookback-months", type=int, default=12)
-    run_earthquake.add_argument("--worldpop-path", required=True)
-    run_earthquake.add_argument("--admin-path", required=True)
+    run_earthquake.add_argument("--worldpop-path", default=None)
+    run_earthquake.add_argument("--worldpop-dir", default="./data/population")
+    run_earthquake.add_argument(
+        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
+    )
+    run_earthquake.add_argument("--target-adm-level", type=int, default=None)
+    run_earthquake.add_argument("--admin-layer", default=None)
     run_earthquake.add_argument("--output-root", default="./outputs")
     run_earthquake.add_argument(
         "--config",
@@ -1122,6 +1141,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional YAML override for admin fields, thresholds, discovery, and outputs.",
     )
     run_earthquake.add_argument("--validate-only", action="store_true")
+    run_earthquake.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Refresh reusable USGS catalogue and ShakeMap products instead of using the shared cache.",
+    )
     run_earthquake.add_argument("--dry-run", action="store_true")
     run_earthquake.set_defaults(func=_cmd_run_earthquake)
 
@@ -1130,8 +1154,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run HI-06 for the countries and admin levels in a cyclone CSV manifest.",
     )
     cyclone_bulk.add_argument("--countries", default="./configs/cyclone_batch.example.csv")
-    cyclone_bulk.add_argument("--ibtracs-path", required=True)
-    cyclone_bulk.add_argument("--admin-archive", required=True)
+    cyclone_bulk.add_argument("--ibtracs-path", default=None)
+    cyclone_bulk.add_argument(
+        "--admin-archive", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
+    )
     cyclone_bulk.add_argument("--worldpop-dir", action="append", default=[])
     cyclone_bulk.add_argument("--worldpop-download-dir", default="./data/population")
     cyclone_bulk.add_argument("--inputs-dir", default="./data/cyclone")
