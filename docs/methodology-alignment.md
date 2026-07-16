@@ -1,6 +1,6 @@
 # Cross-hazard methodology alignment
 
-All five pipelines implement the same reporting sequence while retaining the
+All six pipelines implement the same reporting sequence while retaining the
 science appropriate to each hazard:
 
 1. validate an ISO3, inclusive analysis window, admin level, and source inputs;
@@ -21,6 +21,7 @@ rather than defining their own reporting identity.
 | Hazard ID | Pipeline ID | Default reporting rule |
 |---|---|---|
 | `drought` | `water_scarcity_spei3` | Any month with SPEI3 ≤ −1.5 |
+| `earthquake` | `earthquake_usgs_shakemap` | Maximum ShakeMap intensity reaches MMI VI |
 | `heat` | `extreme_heat_utci` | UTCI > 32°C for at least three consecutive days |
 | `flood` | `gfm_flood` | Flooded-day count > 0 |
 | `cyclone` | `cyclone_ibtracs_wind_radii` | Inside the observed 63 km/h wind swath |
@@ -35,7 +36,8 @@ review plus a parity test.
 
 Shared code owns run directories, metadata validation, artifact registration,
 administrative contract fields, admin-level naming, population-grid alignment,
-and common raster operations. Hazard modules own source retrieval, quality and
+common input resolution, reusable remote-asset caches, and common raster
+operations. Hazard modules own source retrieval, quality and
 coverage interpretation, event/threshold logic, severity products, and source-
 specific provenance.
 
@@ -50,9 +52,30 @@ pipeline must report coverage and preserve nodata through alignment whenever the
 source exposes a reliable observation mask. A `NaN` coverage field means the
 metric is not yet measurable from the source workflow; it does not mean 100%.
 
+## Shared inputs and cache behavior
+
+All single-run commands use the same path conventions: the global admin archive
+is under `data/cod-ab/`, country WorldPop rasters are under `data/population/`,
+and explicit command-line paths override those defaults. This keeps the command
+surface consistent and ensures a WorldPop raster downloaded for one hazard is
+reused by every other hazard.
+
+Remote source assets are stored below `outputs/_cache/`. SPEI and UTCI retain
+their existing request-keyed CDS caches. USGS catalogues, event details, and
+ShakeMap grids use URL-keyed shared cache entries, allowing the same earthquake
+product to be reused across run windows and countries. GDACS fallback polygons
+use a window-and-storm keyed shared cache. Cached files are hard-linked into run
+directories when the filesystem supports it, retaining auditable run layouts
+without duplicating large downloads.
+
+USGS and GDACS products can be revised. Earthquake and cyclone therefore expose
+`--refresh-cache`; production reruns should use it when the upstream revision is
+part of the methodological intent and record that decision in run metadata.
+
 ## Canonical threshold selection
 
 Multi-threshold tables retain every threshold. The canonical cross-hazard
 `population_affected` and `pct_affected` aliases use SPEI ≤ −1.5 for drought and
-UTCI > 32°C for heat. Flood, cyclone, and violence have one primary reporting
-threshold. See the individual indicator documents for secondary severity bands.
+UTCI > 32°C for heat. Earthquake uses MMI VI. Flood, cyclone, and violence have
+one primary reporting threshold. See the individual indicator documents for
+secondary severity bands.

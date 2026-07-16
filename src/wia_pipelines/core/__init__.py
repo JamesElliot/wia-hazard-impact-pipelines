@@ -7,6 +7,18 @@ from .admin import (
     load_admin_layer,
 )
 from .aggregation import labelled_sum, zonal_sum
+from .assets import (
+    DEFAULT_ADMIN_PATH,
+    DEFAULT_IBTRACS_DIR,
+    DEFAULT_WORLDPOP_DIR,
+    checksum_path,
+    link_cached_asset,
+    resolve_admin_path,
+    resolve_ibtracs_path,
+    resolve_worldpop_path,
+    shared_cache_root,
+    url_cache_key,
+)
 from .cds import download_cds, ensure_downloads, extract_zip_to_dir, months_for_last_n
 from .io_paths import (
     append_artifact,
@@ -29,6 +41,9 @@ from .worldpop import worldpop_profile_and_bounds
 
 __all__ = [
     "admin_bounds_hash",
+    "DEFAULT_ADMIN_PATH",
+    "DEFAULT_IBTRACS_DIR",
+    "DEFAULT_WORLDPOP_DIR",
     "HAZARD_METHODS",
     "HazardMethod",
     "align_to_reference",
@@ -37,21 +52,28 @@ __all__ = [
     "build_hazard_run_context",
     "build_run_layout",
     "create_run_dirs",
+    "checksum_path",
     "download_cds",
     "ensure_dir",
     "ensure_downloads",
     "extract_zip_to_dir",
     "filter_admin_for_iso3",
     "load_admin_layer",
+    "link_cached_asset",
     "labelled_sum",
     "hazard_method",
     "months_for_last_n",
     "reproject_array_to_grid",
     "record_artifact",
+    "resolve_admin_path",
+    "resolve_ibtracs_path",
+    "resolve_worldpop_path",
+    "shared_cache_root",
     "standardize_admin_summary",
     "sync_run_metadata",
     "write_array_geotiff",
     "write_json",
+    "url_cache_key",
     "worldpop_profile_and_bounds",
     "zonal_sum",
 ]

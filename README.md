@@ -57,20 +57,21 @@ wia-hazards run-spei --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-utci --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-flood --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-violence --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
-wia-hazards run-earthquake --iso3 MMR --as-of-date 2025-12-31 \
-  --worldpop-path data/population/mmr_pop_2025.tif \
-  --admin-path data/cod-ab/mmr_adm2.gpkg \
-  --config configs/earthquake.example.yml
-wia-hazards run-cyclone --iso3 MOZ --as-of-date 2026-03-31 --lookback-months 12 \
-  --ibtracs-path data/cyclone/ibtracs.csv \
-  --worldpop-path data/population/moz_pop_2025.tif \
-  --admin-path data/cod-ab/moz_adm2.gpkg \
-  --config configs/cyclone.example.yml
+wia-hazards run-earthquake --iso3 MMR --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-cyclone --iso3 MOZ --as-of-date 2026-03-31 --lookback-months 12
 ```
 
-Use `wia-hazards --help` and the command-specific help for required input
-paths and optional thresholds. See [`docs/data-sources.md`](docs/data-sources.md)
-before running against real data.
+Every command resolves the same default admin archive under `data/cod-ab/` and
+the country WorldPop raster under `data/population/`. Cyclone additionally
+resolves the newest IBTrACS CSV under `data/cyclone/`. Explicit `--admin-path`,
+`--worldpop-path`, and `--ibtracs-path` values still take precedence.
+
+Downloaded CDS, USGS, and GDACS assets are cached below `outputs/_cache/` and
+reused by compatible later runs. Use `--refresh-cache` on earthquake or cyclone
+when a revised upstream catalogue or event product must be retrieved. Use
+`wia-hazards --help` and command-specific help for optional thresholds and
+overrides. See [`docs/data-sources.md`](docs/data-sources.md) before running
+against real data.
 
 ## Outputs and Earth Engine handoff
 

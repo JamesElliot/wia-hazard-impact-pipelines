@@ -5,7 +5,8 @@
 The HI-EQ pipeline queries the public USGS FDSN event service and follows each
 catalogue event's product metadata to the selected ShakeMap `grid.xml`. Raw
 catalogue responses, event details, version identifiers, product URLs and
-checksums are retained in the run directory. A successful empty result is
+checksums are retained in the run directory and a shared USGS cache. A
+successful empty result is
 distinct from a network or product-retrieval failure. USGS products may be
 revised, so published WIA runs should freeze and retain the retrieved inputs.
 
@@ -41,6 +42,25 @@ data/
 All files below `data/` are ignored. Example configuration and manifests live
 in `configs/` so that paths and run parameters can be shared without sharing
 the underlying data.
+
+The single-run commands discover the shared admin, WorldPop, and IBTrACS assets
+from this layout, so those paths do not need to be repeated in every shell
+command. Explicit path flags remain available for nonstandard layouts.
+
+Reusable network downloads are stored separately from source inputs:
+
+```text
+outputs/_cache/
+├── _shared/
+│   ├── gdacs/
+│   └── usgs/
+├── heat/
+└── water_scarcity_spei3/
+```
+
+Run directories contain hard-linked or copied references to the exact cached
+USGS/GDACS products they used. Delete the relevant cache entry or pass
+`--refresh-cache` when intentionally retrieving an upstream revision.
 
 ## Provenance requirements
 

@@ -1,4 +1,5 @@
 import numpy as np
+import wia_pipelines.hazards.earthquake.client as client
 
 from wia_pipelines.hazards.earthquake.client import (
     build_catalog_url,
@@ -58,3 +59,23 @@ def test_parse_grid_xml_extracts_continuous_mmi():
     np.testing.assert_array_equal(grid.mmi, [[5.5, 6.0], [7.0, 8.0]])
     assert grid.transform.c == 9.5
     assert grid.transform.f == 21.5
+
+
+def test_download_cache_reuses_asset_and_refreshes_on_request(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_fetch(url, timeout_seconds=120):
+        calls.append((url, timeout_seconds))
+        return f"payload-{len(calls)}".encode()
+
+    monkeypatch.setattr(client, "fetch_bytes", fake_fetch)
+    path = tmp_path / "asset.bin"
+    first = client.download_cached("https://example.test/asset", path)
+    second = client.download_cached("https://example.test/asset", path)
+    refreshed = client.download_cached("https://example.test/asset", path, refresh=True)
+
+    assert first["source"] == "download"
+    assert second["source"] == "cache"
+    assert refreshed["source"] == "download"
+    assert len(calls) == 2
+    assert path.read_bytes() == b"payload-2"

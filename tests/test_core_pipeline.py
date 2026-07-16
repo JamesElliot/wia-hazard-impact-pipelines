@@ -15,7 +15,14 @@ from wia_pipelines.core.pipeline import (
 
 
 def test_method_registry_covers_every_supported_hazard():
-    assert set(HAZARD_METHODS) == {"cyclone", "drought", "flood", "heat", "violence"}
+    assert set(HAZARD_METHODS) == {
+        "cyclone",
+        "drought",
+        "earthquake",
+        "flood",
+        "heat",
+        "violence",
+    }
     assert all(method.method_version for method in HAZARD_METHODS.values())
     assert all(method.population_rule for method in HAZARD_METHODS.values())
 
