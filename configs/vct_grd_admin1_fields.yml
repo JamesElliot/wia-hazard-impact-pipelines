@@ -1,0 +1,15 @@
+# VCT and GRD are small archipelagic states (mainland + several outer
+# islands/Grenadines). At 100m WorldPop resolution the COD-AB admin1
+# coastline doesn't exactly trace the raster's coastline, so a fringe of
+# populated coastal/island pixels sits just outside every admin1 polygon.
+# admin.all_touched=true recovers most of that fringe (pixel-touches-polygon
+# instead of pixel-center-in-polygon); the residual gap (measured ~2.7-3.5%
+# for GRD/VCT with all_touched on) still exceeds the pipeline default
+# ±2% tolerance, so population.max_unassigned_fraction is widened to match.
+admin:
+  all_touched: true
+  fields:
+    adm1_name_en: adm1_name
+    adm1_name_local: adm1_name1
+population:
+  max_unassigned_fraction: 0.05
