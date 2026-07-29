@@ -26,6 +26,7 @@ dependencies:
   - fiona>=1.9
   - affine>=2.4
   - rioxarray>=0.15
+  - scipy>=1.11
 
   # STAC / EO
   - pystac-client>=0.7

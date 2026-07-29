@@ -21,7 +21,8 @@ ruff format --check src scripts tests
 - Use ISO3 country codes (uppercase, 3 letters).
 - Use ISO dates (`YYYY-MM-DD`).
 - Validate run metadata against `schemas/run_metadata.schema.json`.
-- Keep outputs under `./outputs/<hazard>/<ISO3>/<run_id>/...`.
+- Keep outputs under the canonical layout defined in `docs/output-contract.md`
+  (`./outputs/<ISO3>/<WINDOW>/<hazard>/...`).
 - Use canonical run directories in pipelines: `raw`, `intermediate`, `rasters`, `tables`, `qc`, `logs`.
 - For coverage checks, include both numeric coverage metrics and visual overlays.
 - For long-running download/raster steps, write progress status JSON into the run `logs/` directory.

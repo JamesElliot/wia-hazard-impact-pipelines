@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import json
 import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from time import perf_counter
 from typing import Any
 
 from ..config import RunConfig
+from ..core.assets import checksum_path, shared_cache_root
 from ..core.pipeline import (
     build_hazard_run_context,
     record_artifact,
     standardize_admin_summary,
     sync_run_metadata,
 )
-from .coverage_checks import check_worldpop_coverage
+from ..core.progress import make_progress_writer
+from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate
+from .flood_visualize import write_run_maps
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,12 @@ def build_flood_run_context(
     inputs: FloodRunInputs,
     create_dirs: bool = True,
     write_metadata: bool = True,
+    skip_if_complete: bool = False,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    return build_hazard_run_context(config, create_dirs=create_dirs, write_metadata=write_metadata)
+    return build_hazard_run_context(
+        config, create_dirs=create_dirs, write_metadata=write_metadata, skip_if_complete=skip_if_complete
+    )
 
 
 def flood_binary_from_days(flood_days, threshold_days: int = 0):
@@ -79,40 +83,6 @@ def evaluate_preflight_coverage(
     }
 
 
-def make_progress_writer(
-    status_path: Path,
-    stage: str,
-    total: int,
-):
-    """Build a lightweight closure that writes JSON progress snapshots."""
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    started_at = perf_counter()
-    total = max(0, int(total))
-
-    def _write(processed: int, ok: int = 0, failed: int = 0, current: str | None = None) -> dict[str, Any]:
-        processed_i = max(0, int(processed))
-        elapsed = perf_counter() - started_at
-        rate = (processed_i / elapsed) if elapsed > 0 else 0.0
-        remaining = max(0, total - processed_i)
-        eta_seconds = (remaining / rate) if rate > 0 else None
-        payload = {
-            "stage": stage,
-            "processed": processed_i,
-            "total": total,
-            "ok": int(ok),
-            "failed": int(failed),
-            "pct_complete": (float(processed_i) / float(total) * 100.0) if total else 100.0,
-            "elapsed_seconds": round(float(elapsed), 2),
-            "rate_items_per_second": round(float(rate), 4),
-            "eta_seconds": None if eta_seconds is None else round(float(eta_seconds), 2),
-            "current": current,
-        }
-        status_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        return payload
-
-    return _write
-
-
 def close_enough(a: float, b: float, atol: float = 1e-3, rtol: float = 1e-7) -> bool:
     return math.isclose(a, b, abs_tol=atol, rel_tol=rtol)
 
@@ -141,11 +111,13 @@ class FloodPipelineRunOptions:
     asset_key: str = "ensemble_flood_extent"
     datetime_range: str | None = None
     worldpop_coverage_min_pct: float = 98.0
+    worldpop_coverage_hard_min_pct: float = 50.0
     flood_stac_coverage_min_pct: float = 99.999
     flood_stac_coverage_hard_min_pct: float = 50.0
     flood_binary_threshold_days: int = 0
     chunk_y: int = 1024
     chunk_x: int = 1024
+    skip_if_complete: bool = False
 
 
 def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
@@ -185,8 +157,17 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         raise ValueError("flood_stac_coverage_hard_min_pct must be within [0, 100]")
     if float(options.flood_stac_coverage_min_pct) < float(options.flood_stac_coverage_hard_min_pct):
         raise ValueError("flood_stac_coverage_min_pct must be >= flood_stac_coverage_hard_min_pct")
+    if (
+        float(options.worldpop_coverage_hard_min_pct) < 0.0
+        or float(options.worldpop_coverage_hard_min_pct) > 100.0
+    ):
+        raise ValueError("worldpop_coverage_hard_min_pct must be within [0, 100]")
+    if float(options.worldpop_coverage_min_pct) < float(options.worldpop_coverage_hard_min_pct):
+        raise ValueError("worldpop_coverage_min_pct must be >= worldpop_coverage_hard_min_pct")
 
-    ctx = build_flood_run_context(inputs=inputs, create_dirs=True, write_metadata=True)
+    ctx = build_flood_run_context(
+        inputs=inputs, create_dirs=True, write_metadata=True, skip_if_complete=options.skip_if_complete
+    )
     config = ctx["config"]
     layout = ctx["layout"]
     metadata = ctx["metadata"]
@@ -229,6 +210,20 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         pop_valid &= wp_arr != float(wp_nodata)
     pop_valid &= wp_arr >= 0
     _artifact("worldpop_raster", options.worldpop_path, "WorldPop grid for flood aggregation")
+    # DOC-006/PROD-003: checksum WorldPop/admin inputs for reproducibility
+    # provenance, matching cyclone/earthquake's existing "inputs" shape.
+    # cache_dir avoids re-hashing the ~988MB admin file on every run in a batch.
+    checksum_cache_dir = shared_cache_root(config.output_root, "checksums")
+    metadata["inputs"] = {
+        "worldpop": {
+            "path": str(options.worldpop_path.resolve()),
+            "sha256": checksum_path(options.worldpop_path, cache_dir=checksum_cache_dir),
+        },
+        "admin": {
+            "path": str(options.admin_path.resolve()),
+            "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
+        },
+    }
 
     window_start = config.window_start.isoformat()
     window_end = config.window_end.isoformat()
@@ -246,12 +241,26 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         )
     wp_cov = check_worldpop_coverage(admin_bounds_wsen, options.worldpop_path)
 
-    wp_ok = float(wp_cov.get("coverage_pct", 0.0)) >= float(options.worldpop_coverage_min_pct)
-    if not wp_ok:
+    wp_gate = evaluate_coverage_gate(
+        wp_cov.get("coverage_pct", 0.0),
+        options.worldpop_coverage_min_pct,
+        options.worldpop_coverage_hard_min_pct,
+    )
+    if wp_gate == "fail":
         _sync()
         raise RuntimeError(
-            f"WorldPop coverage below threshold: {wp_cov.get('coverage_pct', 0.0):.3f}% < {options.worldpop_coverage_min_pct:.3f}%"
+            "WorldPop coverage below hard minimum: "
+            f"{wp_cov.get('coverage_pct', 0.0):.3f}% < {options.worldpop_coverage_hard_min_pct:.3f}%"
         )
+    if wp_gate == "warn":
+        warn_msg = (
+            "WorldPop coverage below target threshold; continuing because it meets the hard minimum. "
+            f"Observed={wp_cov.get('coverage_pct', 0.0):.3f}% Target={options.worldpop_coverage_min_pct:.3f}% "
+            f"HardMin={options.worldpop_coverage_hard_min_pct:.3f}%"
+        )
+        warnings.warn(warn_msg, RuntimeWarning, stacklevel=2)
+        metadata.setdefault("warnings", [])
+        metadata["warnings"].append({"stage": "preflight_coverage", "message": warn_msg})
 
     items = []
     item_ids: list[str] = []
@@ -268,6 +277,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             "worldpop": wp_cov,
             "thresholds": {
                 "worldpop_coverage_min_pct": float(options.worldpop_coverage_min_pct),
+                "worldpop_coverage_hard_min_pct": float(options.worldpop_coverage_hard_min_pct),
                 "flood_stac_union_coverage_min_pct": float(options.flood_stac_coverage_min_pct),
                 "flood_stac_union_coverage_hard_min_pct": float(options.flood_stac_coverage_hard_min_pct),
             },
@@ -321,6 +331,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             "worldpop": wp_cov,
             "thresholds": {
                 "worldpop_coverage_min_pct": float(options.worldpop_coverage_min_pct),
+                "worldpop_coverage_hard_min_pct": float(options.worldpop_coverage_hard_min_pct),
                 "flood_stac_union_coverage_min_pct": float(options.flood_stac_coverage_min_pct),
                 "flood_stac_union_coverage_hard_min_pct": float(options.flood_stac_coverage_hard_min_pct),
             },
@@ -567,9 +578,20 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     out_csv = layout["tables"] / f"{iso3}_{admin_label}_flood_exposure_{window_start}_{window_end}.csv"
     out_df.to_csv(out_csv, index=False)
     _artifact("admin_flood_table", out_csv, f"{admin_label.title()} flood exposure + severity table")
-    _artifact(f"{admin_label}_flood_table", out_csv, f"{admin_label.title()} flood exposure + severity table")
-    if adm_level == 2:
-        _artifact("admin2_flood_table", out_csv, "Admin2 flood exposure + severity table")
+
+    map_paths = write_run_maps(
+        admin_gdf,
+        out_df,
+        flood_days_tif,
+        layout["maps"],
+        iso3=iso3,
+        pcode_column=pcode_label,
+        admin_level=adm_level,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    for kind, path in map_paths.items():
+        _artifact(kind, path, f"{admin_label.title()} flood indicator map")
 
     # Metadata fields used by parity checks.
     metadata["gfm_load"] = {
@@ -634,20 +656,19 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         "window_start": window_start,
         "window_end": window_end,
     }
-    metadata[f"{admin_label}_flood_table"] = dict(metadata["admin_flood_table"])
-    if adm_level == 2:
-        metadata["admin2_flood_table"] = dict(metadata["admin_flood_table"])
+    # PROD-001: terminal marker so a *future* run can tell this one genuinely
+    # finished (vs. the run_metadata.json build_hazard_run_context already
+    # wrote at the very start of this run, before any real computation).
+    metadata["status"] = "SUCCESS"
     _sync()
 
     outputs = {
         "admin_table": str(out_csv),
-        f"{admin_label}_table": str(out_csv),
         "flood_days_tif": str(flood_days_tif),
         "flood_mask_tif": str(flood_mask_tif),
         "pop_affected_tif": str(pop_tif),
+        **{kind: str(path) for kind, path in map_paths.items()},
     }
-    if adm_level == 2:
-        outputs["admin2_table"] = str(out_csv)
 
     return {
         "status": "SUCCESS",

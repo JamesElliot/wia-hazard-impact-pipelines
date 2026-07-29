@@ -29,6 +29,47 @@ the local file-processing code line by line.
 6. Keep GEE project IDs, asset IDs, admin fields, and export destinations in
    configuration rather than source code.
 
+## Hazard-specific considerations
+
+The correspondence table and design rules above assume a raster
+threshold-and-mask pipeline: load a hazard image, compare against a
+threshold, multiply by population, `reduceRegions`. Five of the seven
+hazards (flood, drought/SPEI, heat/UTCI, cyclone, earthquake) fit that shape
+directly. Two do not, because their core operation is vector geometry
+(buffer + union over a point/line feature set), not a raster comparison —
+translating them naively would risk hitting GEE's per-feature
+vertex/computation-timeout limits at realistic event/reach counts:
+
+- **Violence (ACLED)**: the local implementation buffers each event point by
+  its type-specific radius (5/2/1 km) and unions the buffers before
+  rasterizing/counting. A literal per-event `ee.Geometry.buffer()` +
+  `ee.FeatureCollection` union over a country-year's ACLED events is exactly
+  the per-feature-geometry-operation pattern GEE handles awkwardly at scale.
+  Two viable strategies: (a) precompute the buffered/unioned event-density
+  surface outside GEE and import it as a static raster asset per run, or (b)
+  investigate whether `ee.FeatureCollection.distance()` or a vectorized
+  kernel-density image reducer can reproduce the same per-pixel event-count
+  semantics without an explicit per-feature buffer/union step. Neither has
+  been evaluated against this repo's actual output for parity; this is an
+  open design question for whoever does the translation, not a decided plan.
+- **Hydrological drought (GloFAS/SRI, hydrodrought)**: population is
+  attributed to river reaches via a nearest-reach raster distance transform
+  over a buffered `HydroRIVERS` line-feature corridor (`core/rivers.py`), not
+  a direct raster comparison. The GEE equivalent would need either (a) a
+  precomputed corridor/nearest-reach-assignment raster imported as a static
+  asset (mirroring the local `core.rivers` output), since GEE has no direct
+  distance-transform-to-nearest-line-feature primitive at this scale, or (b)
+  reformulating the corridor assignment as a sequence of `ee.Image.distance()`
+  calls per reach group, which does not obviously preserve the same
+  "population served by its single nearest reach" semantics as the local
+  vectorized distance transform. Also unresolved, and worth deciding together
+  with METHOD-005 (the discharge-vs-runoff variable question), since both
+  affect what a GEE port of hydrodrought would actually ingest.
+
+Neither strategy above should be assumed correct without a parity check
+against this repo's own output for at least one real country, the same as
+every other hazard's parity process below.
+
 ## Parity process
 
 For each hazard, select a small country/window that both systems can process.

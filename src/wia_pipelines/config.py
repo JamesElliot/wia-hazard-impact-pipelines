@@ -8,8 +8,10 @@ from typing import Any
 
 import jsonschema
 
+from .core.io_paths import build_run_layout as _build_run_layout
 
-SUPPORTED_HAZARDS = {"cyclone", "drought", "earthquake", "flood", "heat", "violence"}
+
+SUPPORTED_HAZARDS = {"cyclone", "drought", "earthquake", "flood", "heat", "hydrodrought", "violence"}
 
 
 def _validate_iso3(iso3: str) -> str:
@@ -87,20 +89,13 @@ class RunConfig:
             f"{self.window_end.isoformat()}_m{self.lookback_months}_{self.hazard}"
         )
 
+    @property
+    def window_label(self) -> str:
+        return f"{self.window_end.isoformat()}_m{self.lookback_months}"
+
 
 def build_run_paths(config: RunConfig) -> dict[str, Path]:
-    root = Path(config.output_root)
-    base = root / config.hazard / config.iso3 / config.run_id
-    return {
-        "base": base,
-        "raw": base / "raw",
-        "intermediate": base / "intermediate",
-        "rasters": base / "rasters",
-        "tables": base / "tables",
-        "qc": base / "qc",
-        "logs": base / "logs",
-        "cache": root / "_cache" / config.hazard / config.iso3,
-    }
+    return _build_run_layout(config.output_root, config.iso3, config.window_label, config.hazard)
 
 
 def initialize_run_metadata(
@@ -111,7 +106,7 @@ def initialize_run_metadata(
     resolved_paths = paths or build_run_paths(config)
     created = created_utc or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "run_id": config.run_id,
         "created_utc": created,
         "run_config": {

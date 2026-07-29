@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,14 +17,14 @@ from ..core.admin import (
     resolve_admin_level,
     resolve_admin_pcode_column,
 )
+from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
 from ..core.pipeline import build_hazard_run_context, standardize_admin_summary, sync_run_metadata
+from ..core.progress import make_progress_writer
 from ..core.worldpop import bbox_coverage_report, worldpop_profile_and_bounds
-from .coverage_checks import (
-    check_worldpop_coverage,
-    run_cds_single_month_check,
-    spei_sample_request,
-)
+from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate, run_cds_single_month_check
+from .coverage_requests import spei_sample_request
+from .spei_visualize import write_run_maps
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,7 @@ def build_spei_run_context(
     inputs: SpeiRunInputs,
     create_dirs: bool = True,
     write_metadata: bool = True,
+    skip_if_complete: bool = False,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
     month_window = spei_month_window(config.as_of_date, config.lookback_months)
@@ -69,6 +70,7 @@ def build_spei_run_context(
         create_dirs=create_dirs,
         write_metadata=write_metadata,
         metadata_updates={"window_months": [f"{y:04d}-{m:02d}" for y, m in month_window["months"]]},
+        skip_if_complete=skip_if_complete,
     )
     context["month_window"] = month_window
     return context
@@ -121,15 +123,13 @@ class SpeiPipelineRunOptions:
     thresholds: dict[str, float] | None = None
     default_threshold_key: str = "rel_spei_le_m1p5"
     require_full_preflight_coverage: bool = True
+    preflight_coverage_hard_min_pct: float = 50.0
+    skip_if_complete: bool = False
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _write_status(path: Path, payload: dict[str, Any]) -> None:
-    _write_json(path, payload)
 
 
 def _resolve_thresholds(thresholds: dict[str, float] | None) -> dict[str, float]:
@@ -196,7 +196,12 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     from shapely.geometry import mapping
     from shapely.ops import unary_union
 
-    from ..core.cds import download_cds, ensure_downloads, extract_zip_to_dir, months_for_last_n
+    from ..core.cds import (
+        download_month_with_fallback,
+        ensure_downloads,
+        extract_zip_to_dir,
+        months_for_last_n,
+    )
     from ..core.aggregation import labelled_sum
     from ..core.io_paths import append_artifact
     from ..core.raster_ops import reproject_array_to_grid, write_array_geotiff
@@ -214,7 +219,9 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
             f"default_threshold_key '{options.default_threshold_key}' not in thresholds keys {sorted(thresholds)}"
         )
 
-    ctx = build_spei_run_context(inputs=inputs, create_dirs=True, write_metadata=True)
+    ctx = build_spei_run_context(
+        inputs=inputs, create_dirs=True, write_metadata=True, skip_if_complete=options.skip_if_complete
+    )
     config = ctx["config"]
     layout = ctx["layout"]
     metadata = ctx["metadata"]
@@ -277,7 +284,11 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
 
     # WorldPop base raster.
     with rasterio.open(options.worldpop_path) as wp:
-        wp_arr = wp.read(1).astype("float64")
+        # PERF-007: float32, not float64 -- halves this array's memory footprint
+        # (and several same-shape arrays derived from it) at country scale.
+        # Summation still upcasts explicitly at the reduction step below, so
+        # this doesn't trade away precision on the totals that matter.
+        wp_arr = wp.read(1).astype("float32")
         wp_profile = wp.profile.copy()
         wp_transform = wp.transform
         wp_crs = wp.crs
@@ -288,16 +299,40 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     if wp_nodata is not None:
         pop_valid_mask &= wp_arr != float(wp_nodata)
     pop_valid_mask &= wp_arr >= 0
-    worldpop_total = float(np.nansum(wp_arr[pop_valid_mask]))
+    worldpop_total = float(np.nansum(wp_arr[pop_valid_mask], dtype="float64"))
     append_artifact(
         metadata, "worldpop_raster", options.worldpop_path, "Country WorldPop raster used as aggregation grid"
     )
+    # DOC-006/PROD-003: checksum WorldPop/admin inputs for reproducibility
+    # provenance, matching cyclone/earthquake's existing "inputs" shape.
+    # cache_dir avoids re-hashing the ~988MB admin file on every run in a batch.
+    checksum_cache_dir = shared_cache_root(config.output_root, "checksums")
+    metadata["inputs"] = {
+        "worldpop": {
+            "path": str(Path(options.worldpop_path).resolve()),
+            "sha256": checksum_path(options.worldpop_path, cache_dir=checksum_cache_dir),
+        },
+        "admin": {
+            "path": str(Path(options.admin_path).resolve()),
+            "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
+        },
+    }
 
     # Preflight coverage checks.
     sample_year = int(window_months[0].year)
     sample_month = int(window_months[0].month)
     wp_cov = check_worldpop_coverage((west, south, east, north), options.worldpop_path)
-    sample_zip = dirs["logs"] / "preflight" / f"{iso3}_spei_sample_{sample_year}{sample_month:02d}.zip"
+    # PERF-002: shared with batch/preflight.py's own CDS sample cache, keyed
+    # by (iso3, dataset, year, month, cds-bounds hash) so a batch preflight
+    # run whose fixed sample month coincides with this run's own first
+    # window month is reused instead of re-fetched -- the bounds hash keeps
+    # this safe even if preflight's admin path/buffer ever diverges from
+    # this run's, since a mismatched geography just misses the cache rather
+    # than silently returning a sample for the wrong bounding box.
+    sample_zip = (
+        shared_cache_root(config.output_root, "cds_preflight_samples")
+        / f"{iso3}_spei_{sample_year}{sample_month:02d}_{aoi_hash[:12]}.zip"
+    )
     sample_zip.parent.mkdir(parents=True, exist_ok=True)
     sample_req = spei_sample_request(sample_year, sample_month, cds_area)
     sample = run_cds_single_month_check(
@@ -318,127 +353,69 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
             "full_coverage": bool(spei_cov["full_coverage"]),
         },
     }
-    if options.require_full_preflight_coverage and not bool(spei_cov["full_coverage"]):
-        _sync_metadata()
-        raise RuntimeError(
-            f"SPEI preflight coverage is not full ({spei_cov['coverage_pct']:.3f}%). "
-            "Increase CDS buffer and rerun."
+    if options.require_full_preflight_coverage:
+        sample_gate = evaluate_coverage_gate(
+            spei_cov["coverage_pct"], target_pct=100.0, hard_min_pct=options.preflight_coverage_hard_min_pct
         )
+        if sample_gate == "warn":
+            warn_msg = (
+                "SPEI preflight coverage below target (100%); continuing because it meets the hard minimum. "
+                f"Observed={spei_cov['coverage_pct']:.3f}% HardMin={options.preflight_coverage_hard_min_pct:.3f}%"
+            )
+            warnings.warn(warn_msg, RuntimeWarning, stacklevel=2)
+            metadata.setdefault("warnings", [])
+            metadata["warnings"].append({"stage": "preflight_coverage", "message": warn_msg})
+        elif sample_gate == "fail":
+            _sync_metadata()
+            raise RuntimeError(
+                f"SPEI preflight coverage is not full ({spei_cov['coverage_pct']:.3f}%). "
+                "Increase CDS buffer and rerun."
+            )
 
     # Download monthly CDS files with consolidated -> intermediate fallback.
     dl_status_path = dirs["logs"] / "spei_download_status.json"
-    dl_started = time.perf_counter()
-
-    def _dl_status(
-        stage: str, processed: int, total: int, success: int, failed: int, current: str | None = None
-    ) -> None:
-        elapsed = max(0.0, time.perf_counter() - dl_started)
-        rate = (processed / elapsed) if elapsed > 0 else 0.0
-        remaining = max(0, total - processed)
-        eta = (remaining / rate) if rate > 0 else None
-        _write_status(
-            dl_status_path,
-            {
-                "stage": stage,
-                "processed": int(processed),
-                "total": int(total),
-                "success": int(success),
-                "failed": int(failed),
-                "pct_complete": float((processed / total) * 100.0) if total else 100.0,
-                "elapsed_seconds": float(round(elapsed, 2)),
-                "rate_items_per_second": float(round(rate, 4)),
-                "eta_seconds": None if eta is None else float(round(eta, 2)),
-                "current": current,
-            },
-        )
 
     months = months_for_last_n(config.as_of_date, n_months=config.lookback_months)
     end_yyyymm = pd.to_datetime(config.as_of_date).strftime("%Y%m")
     cache_key = f"{iso3}_spei3_{aoi_hash}_{end_yyyymm}"
     manifest: list[dict[str, Any]] = []
-    _dl_status("downloads", 0, len(months), 0, 0, None)
+    download_writer = make_progress_writer(dl_status_path, "downloads", len(months))
+    download_writer(0, ok=0, failed=0, current=None)
     ok_months = 0
     failed_months = 0
 
+    def _spei_cds_request(year: int, month: int, tier: str) -> dict[str, Any]:
+        return {
+            "variable": ["standardised_precipitation_evapotranspiration_index"],
+            "accumulation_period": ["3"],
+            "version": "1_0",
+            "product_type": ["reanalysis"],
+            "dataset_type": tier,
+            "year": [str(year)],
+            "month": [f"{month:02d}"],
+            "area": cds_area,
+        }
+
     for idx, (y, m) in enumerate(months, start=1):
         month_label = f"{y}-{m:02d}"
-        month_ok = False
         cons_zip = cache_dirs["cds_raw"] / f"{cache_key}_{y}{m:02d}_consolidated_dataset.zip"
-        if cons_zip.exists() and cons_zip.stat().st_size > 0:
-            manifest.append(
-                {
-                    "year": y,
-                    "month": f"{m:02d}",
-                    "dataset_type": "consolidated_dataset",
-                    "ok": True,
-                    "error": None,
-                    "path": str(cons_zip),
-                    "cached": True,
-                }
-            )
-            month_ok = True
-        else:
-            req_cons = {
-                "variable": ["standardised_precipitation_evapotranspiration_index"],
-                "accumulation_period": ["3"],
-                "version": "1_0",
-                "product_type": ["reanalysis"],
-                "dataset_type": "consolidated_dataset",
-                "year": [str(y)],
-                "month": [f"{m:02d}"],
-                "area": cds_area,
-            }
-            ok, err = download_cds("derived-drought-historical-monthly", req_cons, cons_zip)
-            manifest.append(
-                {
-                    "year": y,
-                    "month": f"{m:02d}",
-                    "dataset_type": "consolidated_dataset",
-                    "ok": bool(ok),
-                    "error": err,
-                    "path": str(cons_zip),
-                    "cached": False,
-                }
-            )
-            if ok:
-                month_ok = True
-            else:
-                int_zip = cache_dirs["cds_raw"] / f"{cache_key}_{y}{m:02d}_intermediate_dataset.zip"
-                if int_zip.exists() and int_zip.stat().st_size > 0:
-                    manifest.append(
-                        {
-                            "year": y,
-                            "month": f"{m:02d}",
-                            "dataset_type": "intermediate_dataset",
-                            "ok": True,
-                            "error": None,
-                            "path": str(int_zip),
-                            "cached": True,
-                        }
-                    )
-                    month_ok = True
-                else:
-                    req_int = req_cons.copy()
-                    req_int["dataset_type"] = "intermediate_dataset"
-                    ok2, err2 = download_cds("derived-drought-historical-monthly", req_int, int_zip)
-                    manifest.append(
-                        {
-                            "year": y,
-                            "month": f"{m:02d}",
-                            "dataset_type": "intermediate_dataset",
-                            "ok": bool(ok2),
-                            "error": err2,
-                            "path": str(int_zip),
-                            "cached": False,
-                        }
-                    )
-                    month_ok = bool(ok2)
+        int_zip = cache_dirs["cds_raw"] / f"{cache_key}_{y}{m:02d}_intermediate_dataset.zip"
+        month_ok, month_rows = download_month_with_fallback(
+            "derived-drought-historical-monthly",
+            _spei_cds_request,
+            cons_zip,
+            int_zip,
+            "dataset_type",
+            y,
+            m,
+        )
+        manifest.extend(month_rows)
 
         if month_ok:
             ok_months += 1
         else:
             failed_months += 1
-        _dl_status("downloads", idx, len(months), ok_months, failed_months, month_label)
+        download_writer(idx, ok=ok_months, failed=failed_months, current=month_label)
 
     manifest_path = ensure_downloads(manifest=manifest, kind="spei3", logs_dir=dirs["logs"])
     append_artifact(metadata, "cds_manifest_spei3", manifest_path, f"{len(manifest)} CDS request rows")
@@ -453,7 +430,8 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     )
 
     nc_paths: list[Path] = []
-    _dl_status("extract", 0, len(chosen), 0, 0, None)
+    extract_writer = make_progress_writer(dl_status_path, "extract", len(chosen))
+    extract_writer(0, ok=0, failed=0, current=None)
     extract_ok = 0
     extract_fail = 0
     for idx, (_, row) in enumerate(chosen.iterrows(), start=1):
@@ -461,12 +439,12 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         extracted = extract_zip_to_dir(zpath, cache_dirs["cds_extracted"])
         if not extracted:
             extract_fail += 1
-            _dl_status("extract", idx, len(chosen), extract_ok, extract_fail, zpath.name)
+            extract_writer(idx, ok=extract_ok, failed=extract_fail, current=zpath.name)
             _sync_metadata()
             raise RuntimeError(f"No NetCDFs extracted from {zpath}")
         extract_ok += 1
         nc_paths.extend(extracted)
-        _dl_status("extract", idx, len(chosen), extract_ok, extract_fail, zpath.name)
+        extract_writer(idx, ok=extract_ok, failed=extract_fail, current=zpath.name)
 
     # Unique paths preserving order.
     seen = set()
@@ -524,26 +502,6 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
 
     # Raster compute stage.
     raster_status_path = dirs["logs"] / "spei_raster_compute_status.json"
-    raster_started = time.perf_counter()
-
-    def _r_status(processed: int, total: int, current: str | None = None) -> None:
-        elapsed = max(0.0, time.perf_counter() - raster_started)
-        rate = (processed / elapsed) if elapsed > 0 else 0.0
-        remaining = max(0, total - processed)
-        eta = (remaining / rate) if rate > 0 else None
-        _write_status(
-            raster_status_path,
-            {
-                "stage": "raster_compute",
-                "processed": int(processed),
-                "total": int(total),
-                "pct_complete": float((processed / total) * 100.0) if total else 100.0,
-                "elapsed_seconds": float(round(elapsed, 2)),
-                "rate_items_per_second": float(round(rate, 4)),
-                "eta_seconds": None if eta is None else float(round(eta, 2)),
-                "current": current,
-            },
-        )
 
     def _mask_da_transform(mask_da_2d) -> Any:
         lats = mask_da_2d["lat"].values
@@ -555,7 +513,13 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         return from_origin(west0, north0, dlon, dlat)
 
     products: dict[str, Any] = {}
-    _r_status(0, len(thresholds), None)
+    # PERF-005: kept alongside (not inside) `products`, which is embedded verbatim
+    # into `metadata["spei_masks"]` and JSON-serialized -- these in-memory arrays
+    # let the aggregation loop below reuse what was just computed instead of
+    # reopening and rereading each pop_affected GeoTIFF straight back off disk.
+    pop_affected_arrays: dict[str, np.ndarray] = {}
+    raster_writer = make_progress_writer(raster_status_path, "raster_compute", len(thresholds))
+    raster_writer(0, current=None)
     for idx, (key, thr) in enumerate(thresholds.items(), start=1):
         mask_native_da = (spei_da <= float(thr)).fillna(False).any(dim="time")
         src_mask_arr = mask_native_da.values.astype(np.uint8)
@@ -603,7 +567,8 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
             "pop_affected_path": str(pop_path),
             "pop_affected_sum": float(np.nansum(pop_affected)),
         }
-        _r_status(idx, len(thresholds), key)
+        pop_affected_arrays[key] = pop_affected
+        raster_writer(idx, current=key)
 
     # Admin aggregation.
     admin_units = admin_gdf.copy()
@@ -633,20 +598,14 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     )
     out["pop_total"] = pop_total_by_id
     for key in thresholds.keys():
-        pop_path = Path(products[key]["pop_affected_path"])
-        with rasterio.open(pop_path) as src:
-            arr = src.read(1).astype("float64")
-            arr_nodata = src.nodata
-            arr_ok = np.isfinite(arr)
-            if arr_nodata is not None:
-                arr_ok &= arr != float(arr_nodata)
-            arr_ok &= arr >= 0
-            pop_aff_by_id = labelled_sum(
-                admin_id_raster,
-                arr,
-                n_labels=n_admin,
-                valid_mask=pop_valid_mask & arr_ok,
-            )
+        arr = pop_affected_arrays[key]
+        arr_ok = np.isfinite(arr) & (arr >= 0)
+        pop_aff_by_id = labelled_sum(
+            admin_id_raster,
+            arr,
+            n_labels=n_admin,
+            valid_mask=pop_valid_mask & arr_ok,
+        )
         col_pop = f"pop_affected_{key}"
         col_pct = f"pct_affected_{key}"
         out[col_pop] = pop_aff_by_id
@@ -666,11 +625,21 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     append_artifact(
         metadata, "admin_water_scarcity_table", out_csv, f"{admin_label.title()} SPEI exposure table"
     )
-    append_artifact(
-        metadata, f"{admin_label}_water_scarcity_table", out_csv, f"{admin_label.title()} SPEI exposure table"
+
+    map_paths = write_run_maps(
+        admin_gdf,
+        out,
+        Path(products[default_key]["mask_worldpop_path"]),
+        layout["maps"],
+        iso3=iso3,
+        pcode_column=pcode_label,
+        admin_level=adm_level,
+        default_threshold_label=default_key,
+        window_start=config.window_start.isoformat(),
+        window_end=config.window_end.isoformat(),
     )
-    if adm_level == 2:
-        append_artifact(metadata, "admin2_water_scarcity_table", out_csv, "Admin2 SPEI exposure table")
+    for kind, path in map_paths.items():
+        append_artifact(metadata, kind, path, f"{admin_label.title()} water scarcity indicator map")
 
     # QC summary CSV (kept small and deterministic for parity).
     qc_csv = dirs["qc_spei"] / f"{iso3}_spei_qc_{config.as_of_date}.csv"
@@ -734,20 +703,19 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         "window_months": [str(p) for p in window_months],
         "rule": "any_month_spei_le_threshold",
     }
-    metadata[f"{admin_label}_table_spei"] = dict(metadata["admin_table_spei"])
-    if adm_level == 2:
-        metadata["admin2_table_spei"] = dict(metadata["admin_table_spei"])
     metadata["spei_qc_figures"] = {"qc_csv": str(qc_csv)}
+    # PROD-001: terminal marker so a *future* run can tell this one genuinely
+    # finished (vs. the run_metadata.json build_hazard_run_context already
+    # wrote at the very start of this run, before any real computation).
+    metadata["status"] = "SUCCESS"
     _sync_metadata()
 
     outputs = {
         "admin_table": str(out_csv),
-        f"{admin_label}_table": str(out_csv),
         "qc_csv": str(qc_csv),
         "default_pop_affected_tif": products[default_key]["pop_affected_path"],
+        **{kind: str(path) for kind, path in map_paths.items()},
     }
-    if adm_level == 2:
-        outputs["admin2_table"] = str(out_csv)
 
     return {
         "status": "SUCCESS",

@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlparse
 
 import geopandas as gpd
 import pandas as pd
+import pytest
 from shapely.geometry import box, mapping
 
 from wia_pipelines.hazards.cyclone.gdacs import extract_wind_buffers, fetch_event_list, match_event
@@ -41,6 +42,32 @@ def test_event_list_fetch_exhausts_pagination():
     events = fetch_event_list(window, fetch_json=fake_fetch)
     assert len(calls) == 2
     assert len(events) == 101
+
+
+def test_event_list_fetch_propagates_network_failure_mid_pagination():
+    calls = []
+
+    def flaky_fetch(url):
+        calls.append(url)
+        if len(calls) == 1:
+            return {"type": "FeatureCollection", "features": [_event(i) for i in range(100)]}
+        raise TimeoutError("simulated GDACS timeout on page 2")
+
+    window = TrackWindow(pd.Timestamp("2025-04-01"), pd.Timestamp("2026-03-31"))
+    with pytest.raises(TimeoutError, match="simulated GDACS timeout"):
+        fetch_event_list(window, fetch_json=flaky_fetch)
+    assert len(calls) == 2
+
+
+def test_event_list_fetch_rejects_malformed_response_with_non_list_features():
+    def malformed_fetch(url):
+        # "features" present but not a list -- e.g. an API error payload
+        # shaped differently than the documented GeoJSON response.
+        return {"type": "FeatureCollection", "features": {"error": "rate limited"}}
+
+    window = TrackWindow(pd.Timestamp("2025-04-01"), pd.Timestamp("2026-03-31"))
+    with pytest.raises(ValueError, match="no GeoJSON feature list"):
+        fetch_event_list(window, fetch_json=malformed_fetch)
 
 
 def test_name_and_date_matching_and_consolidated_buffer_extraction():

@@ -22,11 +22,19 @@ def _validate_iso3(iso3: str) -> str:
 
 
 def load_admin_layer(admin_path: str | Path, layer: str | None = None):
+    """Load an admin boundary layer, handling zip-archived sources and a
+    missing-layer fallback (read the default layer if the named one fails).
+    """
     gpd = _require("geopandas")
     admin_path = Path(admin_path)
     if not admin_path.exists():
         raise FileNotFoundError(f"Admin dataset not found: {admin_path.resolve()}")
-    return gpd.read_file(admin_path, layer=layer)
+    if str(admin_path).lower().endswith(".zip"):
+        return gpd.read_file(f"zip://{admin_path.resolve()}", layer=layer)
+    try:
+        return gpd.read_file(admin_path, layer=layer)
+    except Exception:
+        return gpd.read_file(admin_path)
 
 
 def filter_admin_for_iso3(

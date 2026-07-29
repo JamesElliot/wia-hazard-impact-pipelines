@@ -26,6 +26,10 @@ env/
 .idea/
 .DS_Store
 
+# Root-level notebooks are personal working copies (live outputs, local paths).
+# Canonical, output-stripped examples live in notebooks/examples/ and stay tracked.
+/*.ipynb
+
 # Runtime outputs, logs, downloads, and caches
 outputs/
 logs/

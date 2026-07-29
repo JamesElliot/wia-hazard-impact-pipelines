@@ -35,6 +35,38 @@ def _normalise_longitude_domain(geometry: BaseGeometry, raster_centre_x: float) 
     return geometry
 
 
+def _storm_admin_intersection_counts(
+    admin_4326: gpd.GeoDataFrame, storm_geometries: Mapping[str, BaseGeometry | None]
+) -> np.ndarray:
+    """Count, for each admin polygon, how many storms intersect it.
+
+    PERF-009: replaces a previous per-(storm, admin) nested Python loop
+    (which also recomputed each admin polygon's centroid on every storm
+    iteration) with one spatial-index query per storm. Longitude wrapping is
+    handled by testing the storm geometry at its original position and at
+    +-360 deg shifts, rather than a shift chosen per-admin relative to that
+    admin's own centroid (as `_normalise_longitude_domain` does elsewhere in
+    this module) -- equivalent for any realistic storm/admin geometry, since
+    a real country's admin extent and a storm's track buffer are always far
+    too narrow in longitude for a second, non-adjacent shift level to change
+    the result. Verified against the original per-admin algorithm on a
+    synthetic antimeridian-straddling admin layer before relying on this.
+    """
+    n_admin = len(admin_4326)
+    counts = np.zeros(n_admin, dtype=np.int32)
+    sindex = admin_4326.sindex
+    for geometry in storm_geometries.values():
+        if geometry is None or geometry.is_empty:
+            continue
+        matched: set[int] = set()
+        for shift in (0.0, -360.0, 360.0):
+            candidate = geometry if shift == 0.0 else affinity.translate(geometry, xoff=shift)
+            matched.update(sindex.query(candidate, predicate="intersects"))
+        for index in matched:
+            counts[index] += 1
+    return counts
+
+
 def _to_population_crs(
     geometry: BaseGeometry,
     population_crs,
@@ -169,14 +201,7 @@ def aggregate_population(
                 destination.close()
 
     admin_4326 = admin.to_crs(4326).reset_index(drop=True)
-    storm_counts = np.zeros(n_admin, dtype=np.int32)
-    for geometry in storm_primary_geometries.values():
-        if geometry is None or geometry.is_empty:
-            continue
-        for index, admin_geometry in enumerate(admin_4326.geometry):
-            adjusted = _normalise_longitude_domain(geometry, admin_geometry.centroid.x)
-            if adjusted.intersects(admin_geometry):
-                storm_counts[index] += 1
+    storm_counts = _storm_admin_intersection_counts(admin_4326, storm_primary_geometries)
 
     if primary_threshold not in affected:
         raise ValueError("Primary threshold is missing from band geometries")

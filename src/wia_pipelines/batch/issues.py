@@ -121,6 +121,9 @@ def build_issue_report(readiness: pd.DataFrame, preflight: pd.DataFrame) -> pd.D
             )
             continue
 
+        raw_preflight_issues = pf.get("preflight_issues")
+        preflight_issues = "" if pd.isna(raw_preflight_issues) else str(raw_preflight_issues).strip()
+
         for pipeline in ["spei", "utci", "flood", "violence"]:
             status = str(pf.get(f"{pipeline}_preflight_status", "SKIP")).upper()
             if status == "FAIL":
@@ -130,7 +133,7 @@ def build_issue_report(readiness: pd.DataFrame, preflight: pd.DataFrame) -> pd.D
                     pipeline=pipeline,
                     severity="ERROR",
                     code=f"{pipeline}_preflight_fail",
-                    detail=str(pf.get("preflight_issues", "preflight failure")),
+                    detail=preflight_issues or "preflight failure",
                     action=f"Investigate {pipeline.upper()} preflight errors and data availability.",
                 )
             elif status == "WARN":
@@ -140,11 +143,10 @@ def build_issue_report(readiness: pd.DataFrame, preflight: pd.DataFrame) -> pd.D
                     pipeline=pipeline,
                     severity="WARN",
                     code=f"{pipeline}_preflight_warn",
-                    detail=str(pf.get("preflight_issues", "coverage warning")),
+                    detail=preflight_issues or "coverage warning",
                     action=f"Review {pipeline.upper()} coverage warning and decide if acceptable.",
                 )
 
-        preflight_issues = str(pf.get("preflight_issues", "")).strip()
         if preflight_issues:
             for token in [t.strip() for t in preflight_issues.split(";") if t.strip()]:
                 if ":" in token:

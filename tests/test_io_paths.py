@@ -17,11 +17,13 @@ class IoPathsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             layout = build_run_layout(
                 output_root=Path(td),
-                hazard="flood",
                 iso3="mli",
-                run_id="MLI_2025-01-01_2025-12-31_m12_flood",
+                window_label="2025-12-31_m12",
+                hazard="flood",
             )
             self.assertIn("logs", layout)
+            self.assertIn("maps", layout)
+            self.assertEqual(layout["base"], Path(td) / "MLI" / "2025-12-31_m12" / "flood")
             create_run_dirs(layout)
             for path in layout.values():
                 self.assertTrue(path.exists())

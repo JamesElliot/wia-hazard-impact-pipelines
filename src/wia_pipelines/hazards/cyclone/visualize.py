@@ -27,21 +27,8 @@ import pandas as pd
 import rasterio
 from rasterio.enums import Resampling
 
-
-def _map_extent(admin: gpd.GeoDataFrame, padding_fraction: float = 0.04) -> tuple[float, ...]:
-    xmin, ymin, xmax, ymax = admin.to_crs(4326).total_bounds
-    xpad = max((xmax - xmin) * padding_fraction, 0.1)
-    ypad = max((ymax - ymin) * padding_fraction, 0.1)
-    return xmin - xpad, xmax + xpad, ymin - ypad, ymax + ypad
-
-
-def _style_map(ax: plt.Axes, extent: tuple[float, ...]) -> None:
-    ax.set_xlim(extent[0], extent[1])
-    ax.set_ylim(extent[2], extent[3])
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.grid(color="#d8d8d8", linewidth=0.45, alpha=0.6)
-    ax.set_axisbelow(True)
+from ...core.mapping import map_extent as _map_extent
+from ...core.mapping import style_map as _style_map
 
 
 def plot_tracks_and_affected_population(

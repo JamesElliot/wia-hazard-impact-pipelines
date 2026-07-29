@@ -16,10 +16,11 @@ import rasterio
 import shapely
 from shapely.ops import unary_union
 
-from ...config import RunConfig, initialize_run_metadata, validate_run_metadata
+from ...config import RunConfig, validate_run_metadata
 from ...core.assets import checksum_path, link_cached_asset, shared_cache_root
-from ...core.io_paths import append_artifact, build_run_layout, create_run_dirs
-from ...core.pipeline import hazard_method, standardize_admin_summary
+from ...core.io_paths import append_artifact
+from ...core.pipeline import build_hazard_run_context, standardize_admin_summary
+from .._admin_config import load_yaml_hazard_admin
 from ._version import __version__
 from .aggregate import aggregate_population
 from .config import config_hash, load_config
@@ -63,53 +64,6 @@ def _configured(inputs: RunInputs) -> dict[str, Any]:
     elif not config["admin"].get("layer") and str(inputs.admin).lower().endswith(".zip"):
         config["admin"]["layer"] = f"admin{int(config['admin']['level'])}"
     return config
-
-
-def _actual_column(columns, configured: str | None) -> str | None:
-    if not configured:
-        return None
-    if configured in columns:
-        return configured
-    by_lower = {str(column).lower(): str(column) for column in columns}
-    return by_lower.get(str(configured).lower())
-
-
-def _load_admin(path: Path, iso3: str, admin_config: dict[str, Any]) -> gpd.GeoDataFrame:
-    fields = admin_config["fields"]
-    level = int(admin_config["level"])
-    read_kwargs = {"layer": admin_config["layer"]} if admin_config.get("layer") else {}
-    try:
-        admin = gpd.read_file(path, **read_kwargs)
-    except Exception:
-        if not read_kwargs:
-            raise
-        admin = gpd.read_file(path)
-    if admin.empty or admin.crs is None:
-        raise ValueError("Admin input must contain features and a declared CRS")
-    for key, configured in list(fields.items()):
-        actual = _actual_column(admin.columns, configured)
-        if actual is not None:
-            fields[key] = actual
-    iso_field = fields.get("iso3")
-    if iso_field in admin.columns:
-        subset = admin.loc[admin[iso_field].astype(str).str.upper() == iso3.upper()].copy()
-        if subset.empty:
-            raise ValueError(f"No admin features match ISO3 {iso3} in field {iso_field}")
-        admin = subset
-    elif fields.get("adm0_pcode") in admin.columns:
-        column = fields["adm0_pcode"]
-        subset = admin.loc[admin[column].astype(str).str[:3].str.upper() == iso3.upper()].copy()
-        if subset.empty:
-            raise ValueError(f"No admin features match ISO3 {iso3} by {column} prefix")
-        admin = subset
-    pcode = fields.get(f"adm{level}_pcode")
-    if not pcode or pcode not in admin.columns:
-        raise ValueError(f"Admin input is missing configured admin-{level} key: {pcode}")
-    if admin[pcode].isna().any() or admin[pcode].duplicated().any():
-        raise ValueError(f"Admin-{level} P-codes must be present and unique")
-    admin = admin.loc[admin.geometry.notna() & ~admin.geometry.is_empty].copy()
-    admin.geometry = admin.geometry.make_valid()
-    return admin.reset_index(drop=True)
 
 
 def _load_gdacs(path: Path | None) -> gpd.GeoDataFrame | None:
@@ -158,7 +112,7 @@ def validate_inputs(inputs: RunInputs) -> dict[str, Any]:
     if not Path(inputs.admin).exists():
         raise FileNotFoundError(inputs.admin)
     window = rolling_window(inputs.window_end, int(config["temporal"]["window_months"]))
-    admin = _load_admin(inputs.admin, inputs.iso3, config["admin"])
+    admin = load_yaml_hazard_admin(inputs.admin, inputs.iso3, config["admin"])
     tracks = read_ibtracs(inputs.ibtracs, window)
     with rasterio.open(inputs.worldpop) as population:
         if population.count != 1 or population.crs is None:
@@ -197,17 +151,12 @@ def run_pipeline(inputs: RunInputs) -> Path:
         output_root=Path(inputs.out),
         target_adm_level=int(config["admin"]["level"]),
     )
-    layout = build_run_layout(
-        output_root=run_config.output_root,
-        hazard=run_config.hazard,
-        iso3=run_config.iso3,
-        run_id=run_config.run_id,
-    )
-    create_run_dirs(layout)
+    ctx = build_hazard_run_context(run_config, create_dirs=True, write_metadata=False)
+    layout = ctx["layout"]
     output_dir = layout["base"]
 
     fields = config["admin"]["fields"]
-    admin = _load_admin(inputs.admin, iso3, config["admin"])
+    admin = load_yaml_hazard_admin(inputs.admin, iso3, config["admin"])
     tracks = read_ibtracs(inputs.ibtracs, window)
     candidates = select_candidate_points(tracks, admin, float(config["footprint"]["track_buffer_km"]))
     bands = [int(value) for value in config["footprint"]["severity_bands_kmh"]]
@@ -457,7 +406,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
             table,
             inputs.worldpop,
             mask_path,
-            layout["qc"],
+            layout["maps"],
             iso3=iso3,
             end_label=end_label,
             window_start=window.start.date().isoformat(),
@@ -490,8 +439,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
     manifest = _manifest(
         inputs,
         config,
-        run_config,
-        layout,
+        ctx["metadata"],
         window,
         aggregation.country_summary,
         audit_rows,
@@ -535,8 +483,7 @@ def _is_provisional(storm: pd.DataFrame, last_date: pd.Timestamp, window_end: pd
 def _manifest(
     inputs,
     config,
-    run_config,
-    layout,
+    base_metadata,
     window,
     country_summary,
     audit_rows,
@@ -552,17 +499,16 @@ def _manifest(
         "worldpop": Path(inputs.worldpop),
         "admin": Path(inputs.admin),
     }
+    checksum_cache_dir = shared_cache_root(inputs.out, "checksums")
     if gdacs_path:
         input_paths["gdacs_footprints"] = Path(gdacs_path)
     if gdacs_audit_path and Path(gdacs_audit_path).exists():
         input_paths["gdacs_audit"] = Path(gdacs_audit_path)
-    metadata = initialize_run_metadata(run_config, paths=layout)
-    method_definition = hazard_method("cyclone")
+    # base_metadata already carries run_config/paths/pipeline/method_version/population_rule
+    # from build_hazard_run_context(); only the cyclone-specific fields are added here.
+    metadata = base_metadata
     metadata.update(
         {
-            "pipeline": method_definition.pipeline,
-            "method_version": method_definition.method_version,
-            "population_rule": method_definition.population_rule,
             "indicator": "HI-06",
             "pipeline_version": __version__,
             "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -578,7 +524,10 @@ def _manifest(
             "config": config,
             "config_hash": config_hash(config),
             "inputs": {
-                key: {"path": str(path.resolve()), "sha256": checksum_path(path)}
+                key: {
+                    "path": str(path.resolve()),
+                    "sha256": checksum_path(path, cache_dir=checksum_cache_dir),
+                }
                 for key, path in input_paths.items()
             },
             "qa": {

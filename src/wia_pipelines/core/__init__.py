@@ -19,7 +19,13 @@ from .assets import (
     shared_cache_root,
     url_cache_key,
 )
-from .cds import download_cds, ensure_downloads, extract_zip_to_dir, months_for_last_n
+from .cds import (
+    download_cds,
+    download_month_with_fallback,
+    ensure_downloads,
+    extract_zip_to_dir,
+    months_for_last_n,
+)
 from .io_paths import (
     append_artifact,
     build_run_layout,
@@ -27,15 +33,7 @@ from .io_paths import (
     ensure_dir,
     write_json,
 )
-from .pipeline import (
-    HAZARD_METHODS,
-    HazardMethod,
-    build_hazard_run_context,
-    hazard_method,
-    record_artifact,
-    standardize_admin_summary,
-    sync_run_metadata,
-)
+from .progress import make_progress_writer
 from .raster_ops import align_to_reference, reproject_array_to_grid, write_array_geotiff
 from .worldpop import worldpop_profile_and_bounds
 
@@ -54,6 +52,7 @@ __all__ = [
     "create_run_dirs",
     "checksum_path",
     "download_cds",
+    "download_month_with_fallback",
     "ensure_dir",
     "ensure_downloads",
     "extract_zip_to_dir",
@@ -62,6 +61,7 @@ __all__ = [
     "link_cached_asset",
     "labelled_sum",
     "hazard_method",
+    "make_progress_writer",
     "months_for_last_n",
     "reproject_array_to_grid",
     "record_artifact",
