@@ -50,16 +50,16 @@ def run_checks(run_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing run metadata: {metadata_path}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
-    run_id = metadata.get("run_id")
-    if run_id and run_dir.name == run_id:
-        checks.append(CheckResult("run_id_matches_dir", "PASS", run_id))
+    recorded_base = (metadata.get("paths") or {}).get("base")
+    if recorded_base and Path(recorded_base).resolve() == run_dir.resolve():
+        checks.append(CheckResult("run_dir_matches_metadata_base", "PASS", recorded_base))
     else:
         failures += 1
         checks.append(
             CheckResult(
-                "run_id_matches_dir",
+                "run_dir_matches_metadata_base",
                 "FAIL",
-                f"run_dir={run_dir.name}, run_id={run_id}",
+                f"run_dir={run_dir.resolve()}, metadata.paths.base={recorded_base}",
             )
         )
 

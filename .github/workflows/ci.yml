@@ -24,11 +24,21 @@ jobs:
             exit 1
           fi
 
+      - name: Cache conda packages
+        uses: actions/cache@v4
+        env:
+          # Bump to force a fresh solve/download even if environment.yaml is unchanged.
+          CACHE_NUMBER: 0
+        with:
+          path: ~/conda_pkgs_dir
+          key: ${{ runner.os }}-conda-${{ env.CACHE_NUMBER }}-${{ hashFiles('environment.yaml') }}
+
       - uses: conda-incubator/setup-miniconda@v4
         with:
           activate-environment: wia-hazard-pipelines
           environment-file: environment.yaml
           auto-activate: false
+          use-only-tar-bz2: true # required for the packages cache above to actually be hit
 
       - name: Install package and development tools
         run: python -m pip install -e '.[dev]' --no-build-isolation

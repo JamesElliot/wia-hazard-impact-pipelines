@@ -8,17 +8,18 @@ from pathlib import Path
 import pandas as pd
 
 from wia_pipelines.core.worldpop import bbox_coverage_report
+from wia_pipelines.hazards.coverage_aoi import prepare_country_admin_context
 from wia_pipelines.hazards.coverage_checks import (
     check_worldpop_coverage,
-    plot_flood_item_extents_figure,
-    plot_grid_overlay_figure,
-    plot_raster_overlay_figure,
-    prepare_country_admin_context,
     run_cds_single_month_check,
     run_flood_stac_extent_check,
     run_flood_single_asset_check,
-    spei_sample_request,
-    utci_sample_request,
+)
+from wia_pipelines.hazards.coverage_requests import spei_sample_request, utci_sample_request
+from wia_pipelines.hazards.qc_plotting import (
+    plot_flood_item_extents_figure,
+    plot_grid_overlay_figure,
+    plot_raster_overlay_figure,
 )
 
 

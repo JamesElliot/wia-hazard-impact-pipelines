@@ -4,10 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import geopandas as gpd
-import numpy as np
 import pandas as pd
-import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
@@ -44,32 +41,23 @@ class ViolenceHazardTests(unittest.TestCase):
             self.assertTrue((ctx["layout"]["base"] / "run_metadata.json").exists())
 
     def test_run_violence_pipeline_golden_toy(self) -> None:
+        from conftest import make_admin_gpkg, make_worldpop_tif
+
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
 
             # Tiny 4x4 WorldPop grid (EPSG:4326), 10 persons per pixel.
-            wp_path = root / "toy_worldpop.tif"
-            wp_data = np.full((4, 4), 10, dtype="float32")
-            wp_profile = {
-                "driver": "GTiff",
-                "height": 4,
-                "width": 4,
-                "count": 1,
-                "dtype": "float32",
-                "crs": "EPSG:4326",
-                "transform": from_origin(0, 4, 1, 1),
-                "nodata": -9999.0,
-            }
-            with rasterio.open(wp_path, "w", **wp_profile) as dst:
-                dst.write(wp_data, 1)
+            wp_path = make_worldpop_tif(
+                root / "toy_worldpop.tif", shape=(4, 4), value=10, transform=from_origin(0, 4, 1, 1)
+            )
 
             # Single admin polygon covering the raster extent.
-            admin_path = root / "toy_admin.gpkg"
-            admin_gdf = gpd.GeoDataFrame(
-                {"iso3": ["YEM"], "adm2_pcode": ["YEM001"], "geometry": [box(0, 0, 4, 4)]},
-                crs="EPSG:4326",
+            admin_path = make_admin_gpkg(
+                root / "toy_admin.gpkg",
+                geometries=[box(0, 0, 4, 4)],
+                extra_columns={"iso3": ["YEM"], "adm2_pcode": ["YEM001"]},
+                layer="admin2",
             )
-            admin_gdf.to_file(admin_path, layer="admin2", driver="GPKG")
 
             # Two events in two separate cells; default included types exclude protests.
             acled_path = root / "acled_yem_toy.csv"
@@ -114,7 +102,7 @@ class ViolenceHazardTests(unittest.TestCase):
             self.assertTrue(Path(summary["outputs"]["qc_coverage_png"]).exists())
             self.assertTrue(Path(summary["outputs"]["qc_mask_png"]).exists())
             self.assertTrue(Path(summary["outputs"]["qc_mask_worldpop_png"]).exists())
-            table = pd.read_csv(summary["outputs"]["adm2_stats_csv"])
+            table = pd.read_csv(summary["outputs"]["admin_stats_csv"])
             self.assertEqual(len(table), 1)
             self.assertAlmostEqual(float(table["pop_total"].iloc[0]), 160.0, places=3)
             self.assertAlmostEqual(float(table["pop_affected"].iloc[0]), 20.0, places=3)
@@ -136,6 +124,84 @@ class ViolenceHazardTests(unittest.TestCase):
                     "population_data_coverage",
                 }.issubset(table.columns)
             )
+
+            # DOC-006/PROD-003: WorldPop/admin inputs are checksummed for
+            # reproducibility provenance.
+            import hashlib
+            import json
+
+            metadata = json.loads((run_dir / "run_metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                metadata["inputs"]["worldpop_sha256"], hashlib.sha256(wp_path.read_bytes()).hexdigest()
+            )
+            self.assertEqual(metadata["inputs"]["admin_path"], str(admin_path))
+
+    def _run_with_worldpop_row_count(self, n_rows: int):
+        # Shrinks the WorldPop raster's vertical extent so it only partially covers
+        # the 4x4 admin AOI, exercising the two-tier preflight-coverage gate
+        # (ARCH-012) instead of the golden-toy test's full-coverage happy path.
+        import json
+
+        from conftest import make_admin_gpkg, make_worldpop_tif
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            wp_path = make_worldpop_tif(
+                root / "toy_worldpop.tif", shape=(n_rows, 4), value=10, transform=from_origin(0, 4, 1, 1)
+            )
+            admin_path = make_admin_gpkg(
+                root / "toy_admin.gpkg",
+                geometries=[box(0, 0, 4, 4)],
+                extra_columns={"iso3": ["YEM"], "adm2_pcode": ["YEM001"]},
+                layer="admin2",
+            )
+            acled_path = root / "acled_yem_toy.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "latitude": 3.5,
+                        "longitude": 0.5,
+                        "event_date": "2025-06-01",
+                        "event_type": "Battles",
+                        "fatalities": 0,
+                    }
+                ]
+            ).to_csv(acled_path, index=False)
+            summary = run_violence_pipeline(
+                inputs=ViolenceRunInputs(
+                    iso3="YEM",
+                    as_of_date="2025-12-31",
+                    lookback_months=12,
+                    output_root=root / "outputs",
+                ),
+                admin_path=admin_path,
+                worldpop_path=wp_path,
+                acled_csv=acled_path,
+                admin_layer="admin2",
+                included_event_types=["Battles", "Riots"],
+                worldpop_coverage_min_pct=98.0,
+                mask_threshold_events=1,
+                all_touched=True,
+            )
+            metadata = json.loads(
+                (Path(summary["run_dir"]) / "run_metadata.json").read_text(encoding="utf-8")
+            )
+            return summary, metadata
+
+    def test_worldpop_coverage_between_hard_min_and_target_warns_not_fails(self) -> None:
+        # 3 of 4 rows -> WorldPop raster covers y in [1, 4], 75% of the admin bbox area:
+        # above the 50% hard-min, below the 98% target.
+        _summary, metadata = self._run_with_worldpop_row_count(3)
+        cov = metadata["preflight_coverage"]["worldpop"]["coverage_pct"]
+        self.assertAlmostEqual(cov, 75.0, places=3)
+        messages = [w["message"] for w in metadata.get("warnings", [])]
+        self.assertTrue(any("WorldPop coverage below target threshold" in m for m in messages))
+
+    def test_worldpop_coverage_below_hard_min_raises(self) -> None:
+        # 1 of 4 rows -> WorldPop raster covers only 25% of the admin bbox area,
+        # below the 50% hard minimum, so this must still hard-fail.
+        with self.assertRaises(RuntimeError):
+            self._run_with_worldpop_row_count(1)
 
 
 if __name__ == "__main__":

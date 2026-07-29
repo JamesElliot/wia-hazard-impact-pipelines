@@ -35,7 +35,8 @@ by this binary mask.
 - Default STAC endpoint: `https://stac.eodc.eu/api/v1`.
 - Default WorldPop coverage threshold: 98%.
 - Default STAC union-bounds coverage threshold: 99.999%, with a lower hard
-  failure bound used to distinguish warnings from unusable coverage.
+  failure bound of 50% used to distinguish warnings from unusable coverage
+  (coverage below 50% raises; coverage between 50% and 99.999% warns).
 - Flood extent resampling and the UTC calendar-day mosaic must be matched
   explicitly in the Earth Engine implementation.
 

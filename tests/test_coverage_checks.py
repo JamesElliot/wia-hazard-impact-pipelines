@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wia_pipelines.hazards.coverage_checks import (
+from wia_pipelines.hazards.coverage_aoi import prepare_country_admin_context
+from wia_pipelines.hazards.coverage_checks import evaluate_coverage_gate
+from wia_pipelines.hazards.coverage_requests import (
     days_for_year_month,
-    prepare_country_admin_context,
     spei_sample_request,
     utci_sample_request,
 )
@@ -39,6 +40,18 @@ class CoverageChecksTests(unittest.TestCase):
         self.assertEqual(req["day"][0], "01")
         self.assertEqual(req["day"][-1], "31")
         self.assertIn("universal_thermal_climate_index_daily_statistics", req["variable"])
+
+    def test_evaluate_coverage_gate_ok_at_or_above_target(self) -> None:
+        self.assertEqual(evaluate_coverage_gate(100.0, target_pct=99.999, hard_min_pct=50.0), "ok")
+        self.assertEqual(evaluate_coverage_gate(99.999, target_pct=99.999, hard_min_pct=50.0), "ok")
+
+    def test_evaluate_coverage_gate_warns_between_hard_min_and_target(self) -> None:
+        self.assertEqual(evaluate_coverage_gate(78.6, target_pct=98.0, hard_min_pct=50.0), "warn")
+        self.assertEqual(evaluate_coverage_gate(50.0, target_pct=98.0, hard_min_pct=50.0), "warn")
+
+    def test_evaluate_coverage_gate_fails_below_hard_min(self) -> None:
+        self.assertEqual(evaluate_coverage_gate(49.999, target_pct=98.0, hard_min_pct=50.0), "fail")
+        self.assertEqual(evaluate_coverage_gate(0.0, target_pct=98.0, hard_min_pct=50.0), "fail")
 
     @unittest.skipUnless(HAS_GEO, "geospatial stack not installed")
     def test_prepare_country_admin_context_applies_cds_buffer(self) -> None:

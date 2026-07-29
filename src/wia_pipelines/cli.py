@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
+from typing import Any
 
 from .config import RunConfig, validate_run_metadata
-from .core.assets import resolve_admin_path, resolve_ibtracs_path, resolve_worldpop_path
+from .core.assets import (
+    resolve_admin_path,
+    resolve_hydrorivers_path,
+    resolve_ibtracs_path,
+    resolve_worldpop_path,
+)
 from .core.pipeline import build_hazard_run_context
 
 
@@ -125,6 +132,7 @@ def _cmd_batch_preflight(args: argparse.Namespace) -> int:
         flood_datetime=args.flood_datetime,
         flood_mode=args.flood_mode,
         out_dir=out_dir,
+        output_root=Path(args.output_root).expanduser().resolve(),
     )
     issue_outputs = write_issue_report(
         readiness=readiness,
@@ -218,6 +226,7 @@ def _cmd_batch_run(args: argparse.Namespace) -> int:
         "utci": args.utci_cmd_template,
         "flood": args.flood_cmd_template,
         "violence": args.violence_cmd_template,
+        "hydrodrought": args.hydrodrought_cmd_template,
     }
     # Keep defaults from execution engine when explicit template is not provided.
     cmd_templates = {k: v for k, v in cmd_templates.items() if v is not None}
@@ -249,9 +258,11 @@ def _cmd_batch_run(args: argparse.Namespace) -> int:
     return 0 if int(results["summary"].get("n_failed", 0)) == 0 else 2
 
 
-def _cmd_spei_postrun(args: argparse.Namespace) -> int:
-    from .hazards.spei_parity import run_checks, to_markdown
-
+def _run_postrun(args: argparse.Namespace, hazard: str, parity_module: Any) -> int:
+    """Shared body for every `<hazard>-postrun` command: metadata validation
+    (warning by default, hard failure with --strict-metadata-validation) plus
+    the hazard's own parity report, written under qc/<hazard>/.
+    """
     run_dir = Path(args.run_dir).expanduser().resolve()
     metadata_path = run_dir / "run_metadata.json"
     if not metadata_path.exists():
@@ -274,12 +285,12 @@ def _cmd_spei_postrun(args: argparse.Namespace) -> int:
                 failures += 1
 
     if not args.skip_parity:
-        report = run_checks(run_dir)
-        out_json = run_dir / "qc" / "spei" / "spei_parity_report.json"
-        out_md = run_dir / "qc" / "spei" / "spei_parity_report.md"
+        report = parity_module.run_checks(run_dir)
+        out_json = run_dir / "qc" / hazard / f"{hazard}_parity_report.json"
+        out_md = run_dir / "qc" / hazard / f"{hazard}_parity_report.md"
         out_json.parent.mkdir(parents=True, exist_ok=True)
         out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        out_md.write_text(to_markdown(report), encoding="utf-8")
+        out_md.write_text(parity_module.to_markdown(report), encoding="utf-8")
         outputs["parity_json"] = str(out_json)
         outputs["parity_md"] = str(out_md)
         failures += int(report["failures"])
@@ -299,165 +310,40 @@ def _cmd_spei_postrun(args: argparse.Namespace) -> int:
         )
     )
     return 0 if failures == 0 else 2
+
+
+def _cmd_spei_postrun(args: argparse.Namespace) -> int:
+    from .hazards import spei_parity
+
+    return _run_postrun(args, "spei", spei_parity)
+
+
+def _cmd_hydrodrought_postrun(args: argparse.Namespace) -> int:
+    from .hazards import hydrodrought_parity
+
+    return _run_postrun(args, "hydrodrought", hydrodrought_parity)
 
 
 def _cmd_utci_postrun(args: argparse.Namespace) -> int:
-    from .hazards.utci_parity import run_checks, to_markdown
+    from .hazards import utci_parity
 
-    run_dir = Path(args.run_dir).expanduser().resolve()
-    metadata_path = run_dir / "run_metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Missing run metadata: {metadata_path}")
-
-    failures = 0
-    warnings = 0
-    outputs: dict[str, str] = {}
-
-    if not args.skip_metadata_validation:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        try:
-            validate_run_metadata(payload)
-            outputs["metadata_validation"] = "passed"
-        except Exception as exc:
-            warnings += 1
-            outputs["metadata_validation"] = f"warning: {exc.__class__.__name__}"
-            outputs["metadata_validation_note"] = str(exc).splitlines()[0]
-            if args.strict_metadata_validation:
-                failures += 1
-
-    if not args.skip_parity:
-        report = run_checks(run_dir)
-        out_json = run_dir / "qc" / "utci" / "utci_parity_report.json"
-        out_md = run_dir / "qc" / "utci" / "utci_parity_report.md"
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        out_md.write_text(to_markdown(report), encoding="utf-8")
-        outputs["parity_json"] = str(out_json)
-        outputs["parity_md"] = str(out_md)
-        failures += int(report["failures"])
-        warnings += int(report["warnings"])
-
-    status = "PASS" if failures == 0 else "FAIL"
-    print(
-        json.dumps(
-            {
-                "status": status,
-                "failures": failures,
-                "warnings": warnings,
-                "run_dir": str(run_dir),
-                "outputs": outputs,
-            },
-            indent=2,
-        )
-    )
-    return 0 if failures == 0 else 2
+    return _run_postrun(args, "utci", utci_parity)
 
 
 def _cmd_flood_postrun(args: argparse.Namespace) -> int:
-    from .hazards.flood_parity import run_checks, to_markdown
+    from .hazards import flood_parity
 
-    run_dir = Path(args.run_dir).expanduser().resolve()
-    metadata_path = run_dir / "run_metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Missing run metadata: {metadata_path}")
-
-    failures = 0
-    warnings = 0
-    outputs: dict[str, str] = {}
-
-    if not args.skip_metadata_validation:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        try:
-            validate_run_metadata(payload)
-            outputs["metadata_validation"] = "passed"
-        except Exception as exc:
-            warnings += 1
-            outputs["metadata_validation"] = f"warning: {exc.__class__.__name__}"
-            outputs["metadata_validation_note"] = str(exc).splitlines()[0]
-            if args.strict_metadata_validation:
-                failures += 1
-
-    if not args.skip_parity:
-        report = run_checks(run_dir)
-        out_json = run_dir / "qc" / "flood" / "flood_parity_report.json"
-        out_md = run_dir / "qc" / "flood" / "flood_parity_report.md"
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        out_md.write_text(to_markdown(report), encoding="utf-8")
-        outputs["parity_json"] = str(out_json)
-        outputs["parity_md"] = str(out_md)
-        failures += int(report["failures"])
-        warnings += int(report["warnings"])
-
-    status = "PASS" if failures == 0 else "FAIL"
-    print(
-        json.dumps(
-            {
-                "status": status,
-                "failures": failures,
-                "warnings": warnings,
-                "run_dir": str(run_dir),
-                "outputs": outputs,
-            },
-            indent=2,
-        )
-    )
-    return 0 if failures == 0 else 2
+    return _run_postrun(args, "flood", flood_parity)
 
 
 def _cmd_violence_postrun(args: argparse.Namespace) -> int:
-    from .hazards.violence_parity import run_checks, to_markdown
+    from .hazards import violence_parity
 
-    run_dir = Path(args.run_dir).expanduser().resolve()
-    metadata_path = run_dir / "run_metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Missing run metadata: {metadata_path}")
-
-    failures = 0
-    warnings = 0
-    outputs: dict[str, str] = {}
-
-    if not args.skip_metadata_validation:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        try:
-            validate_run_metadata(payload)
-            outputs["metadata_validation"] = "passed"
-        except Exception as exc:
-            warnings += 1
-            outputs["metadata_validation"] = f"warning: {exc.__class__.__name__}"
-            outputs["metadata_validation_note"] = str(exc).splitlines()[0]
-            if args.strict_metadata_validation:
-                failures += 1
-
-    if not args.skip_parity:
-        report = run_checks(run_dir)
-        out_json = run_dir / "qc" / "violence" / "violence_parity_report.json"
-        out_md = run_dir / "qc" / "violence" / "violence_parity_report.md"
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        out_md.write_text(to_markdown(report), encoding="utf-8")
-        outputs["parity_json"] = str(out_json)
-        outputs["parity_md"] = str(out_md)
-        failures += int(report["failures"])
-        warnings += int(report["warnings"])
-
-    status = "PASS" if failures == 0 else "FAIL"
-    print(
-        json.dumps(
-            {
-                "status": status,
-                "failures": failures,
-                "warnings": warnings,
-                "run_dir": str(run_dir),
-                "outputs": outputs,
-            },
-            indent=2,
-        )
-    )
-    return 0 if failures == 0 else 2
+    return _run_postrun(args, "violence", violence_parity)
 
 
 def _cmd_run_violence(args: argparse.Namespace) -> int:
+    from .core.pipeline import RunAlreadyCompleteError
     from .hazards.violence import ViolenceRunInputs, run_violence_pipeline
 
     included = args.included_event_type if args.included_event_type else None
@@ -484,23 +370,30 @@ def _cmd_run_violence(args: argparse.Namespace) -> int:
             "acled_csv": None if args.acled_csv is None else str(Path(args.acled_csv).expanduser().resolve()),
             "included_event_types": included,
             "worldpop_coverage_min_pct": args.worldpop_coverage_min_pct,
+            "worldpop_coverage_hard_min_pct": args.worldpop_coverage_hard_min_pct,
             "mask_threshold_events": args.mask_threshold_events,
             "all_touched": bool(args.all_touched),
         }
         print(json.dumps(payload, indent=2))
         return 0
 
-    summary = run_violence_pipeline(
-        inputs=inputs,
-        admin_path=admin_path,
-        worldpop_path=worldpop_path,
-        acled_csv=None if args.acled_csv is None else Path(args.acled_csv).expanduser().resolve(),
-        admin_layer=args.admin_layer,
-        included_event_types=included,
-        worldpop_coverage_min_pct=float(args.worldpop_coverage_min_pct),
-        mask_threshold_events=int(args.mask_threshold_events),
-        all_touched=bool(args.all_touched),
-    )
+    try:
+        summary = run_violence_pipeline(
+            inputs=inputs,
+            admin_path=admin_path,
+            worldpop_path=worldpop_path,
+            acled_csv=None if args.acled_csv is None else Path(args.acled_csv).expanduser().resolve(),
+            admin_layer=args.admin_layer,
+            included_event_types=included,
+            worldpop_coverage_min_pct=float(args.worldpop_coverage_min_pct),
+            worldpop_coverage_hard_min_pct=float(args.worldpop_coverage_hard_min_pct),
+            mask_threshold_events=int(args.mask_threshold_events),
+            all_touched=bool(args.all_touched),
+            skip_if_complete=bool(args.skip_if_complete),
+        )
+    except RunAlreadyCompleteError as exc:
+        print(json.dumps({"status": "ALREADY_COMPLETE", "run_dir": str(exc.layout["base"])}, indent=2))
+        return 0
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -541,6 +434,7 @@ def _run_notebook_pipeline(
 
 
 def _cmd_run_spei(args: argparse.Namespace) -> int:
+    from .core.pipeline import RunAlreadyCompleteError
     from .hazards.spei import SpeiPipelineRunOptions, SpeiRunInputs, run_spei_pipeline
 
     iso3 = str(args.iso3).upper()
@@ -557,29 +451,111 @@ def _cmd_run_spei(args: argparse.Namespace) -> int:
         "output_root": str(Path(args.output_root).expanduser().resolve()),
         "cds_buffer_deg": float(args.cds_buffer_deg),
         "require_full_preflight_coverage": not bool(args.allow_partial_preflight),
+        "preflight_coverage_hard_min_pct": float(args.preflight_coverage_hard_min_pct),
     }
     if args.dry_run:
         payload["status"] = "DRY_RUN"
         print(json.dumps(payload, indent=2))
         return 0
 
-    out = run_spei_pipeline(
-        SpeiPipelineRunOptions(
-            inputs=SpeiRunInputs(
-                iso3=iso3,
-                as_of_date=args.as_of_date,
-                lookback_months=int(args.lookback_months),
-                output_root=Path(args.output_root).expanduser().resolve(),
-                target_adm_level=int(args.target_adm_level),
-            ),
-            admin_path=Path(args.admin_path).expanduser().resolve(),
-            worldpop_path=worldpop_path,
-            admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
-            iso3_field=args.iso3_field,
-            cds_buffer_deg=float(args.cds_buffer_deg),
-            require_full_preflight_coverage=not bool(args.allow_partial_preflight),
+    try:
+        out = run_spei_pipeline(
+            SpeiPipelineRunOptions(
+                inputs=SpeiRunInputs(
+                    iso3=iso3,
+                    as_of_date=args.as_of_date,
+                    lookback_months=int(args.lookback_months),
+                    output_root=Path(args.output_root).expanduser().resolve(),
+                    target_adm_level=int(args.target_adm_level),
+                ),
+                admin_path=Path(args.admin_path).expanduser().resolve(),
+                worldpop_path=worldpop_path,
+                admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
+                iso3_field=args.iso3_field,
+                cds_buffer_deg=float(args.cds_buffer_deg),
+                require_full_preflight_coverage=not bool(args.allow_partial_preflight),
+                preflight_coverage_hard_min_pct=float(args.preflight_coverage_hard_min_pct),
+                skip_if_complete=bool(args.skip_if_complete),
+            )
         )
+    except RunAlreadyCompleteError as exc:
+        print(json.dumps({"status": "ALREADY_COMPLETE", "run_dir": str(exc.layout["base"])}, indent=2))
+        return 0
+    payload["status"] = "SUCCESS"
+    payload["summary"] = out
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_run_hydrodrought(args: argparse.Namespace) -> int:
+    from .core.pipeline import RunAlreadyCompleteError
+    from .hazards.hydrodrought import (
+        HydrodroughtPipelineRunOptions,
+        HydrodroughtRunInputs,
+        run_hydrodrought_pipeline,
     )
+
+    iso3 = str(args.iso3).upper()
+    worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
+    hydrorivers_path = resolve_hydrorivers_path(args.hydrorivers_path)
+    payload = {
+        "pipeline": "hydrodrought",
+        "iso3": iso3,
+        "as_of_date": args.as_of_date,
+        "lookback_months": int(args.lookback_months),
+        "target_adm_level": int(args.target_adm_level),
+        "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+        "admin_layer": args.admin_layer or f"admin{int(args.target_adm_level)}",
+        "worldpop_path": str(worldpop_path),
+        "hydrorivers_path": str(hydrorivers_path),
+        "output_root": str(Path(args.output_root).expanduser().resolve()),
+        "cds_buffer_deg": float(args.cds_buffer_deg),
+        "accumulation_months": int(args.accumulation_months),
+        "baseline_start_year": int(args.baseline_start_year),
+        "baseline_end_year": int(args.baseline_end_year),
+        "corridor_base_width_km": float(args.corridor_base_width_km),
+        "corridor_per_order_km": float(args.corridor_per_order_km),
+        "default_threshold_key": args.default_threshold_key,
+        "require_full_preflight_coverage": not bool(args.allow_partial_preflight),
+        "preflight_coverage_hard_min_pct": float(args.preflight_coverage_hard_min_pct),
+    }
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    try:
+        out = run_hydrodrought_pipeline(
+            HydrodroughtPipelineRunOptions(
+                inputs=HydrodroughtRunInputs(
+                    iso3=iso3,
+                    as_of_date=args.as_of_date,
+                    lookback_months=int(args.lookback_months),
+                    output_root=Path(args.output_root).expanduser().resolve(),
+                    target_adm_level=int(args.target_adm_level),
+                ),
+                admin_path=Path(args.admin_path).expanduser().resolve(),
+                worldpop_path=worldpop_path,
+                hydrorivers_path=hydrorivers_path,
+                admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
+                iso3_field=args.iso3_field,
+                cds_buffer_deg=float(args.cds_buffer_deg),
+                accumulation_months=int(args.accumulation_months),
+                baseline_start_year=int(args.baseline_start_year),
+                baseline_end_year=int(args.baseline_end_year),
+                corridor_base_width_km=float(args.corridor_base_width_km),
+                corridor_per_order_km=float(args.corridor_per_order_km),
+                default_threshold_key=args.default_threshold_key,
+                require_full_preflight_coverage=not bool(args.allow_partial_preflight),
+                preflight_coverage_hard_min_pct=float(args.preflight_coverage_hard_min_pct),
+                ewds_url=args.ewds_url,
+                ewds_key=args.ewds_key,
+                skip_if_complete=bool(args.skip_if_complete),
+            )
+        )
+    except RunAlreadyCompleteError as exc:
+        print(json.dumps({"status": "ALREADY_COMPLETE", "run_dir": str(exc.layout["base"])}, indent=2))
+        return 0
     payload["status"] = "SUCCESS"
     payload["summary"] = out
     print(json.dumps(payload, indent=2))
@@ -587,6 +563,7 @@ def _cmd_run_spei(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_utci(args: argparse.Namespace) -> int:
+    from .core.pipeline import RunAlreadyCompleteError
     from .hazards.utci import UtciPipelineRunOptions, UtciRunInputs, run_utci_pipeline
 
     iso3 = str(args.iso3).upper()
@@ -606,30 +583,37 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
         "k_consecutive_days": int(args.k_consecutive_days),
         "abs_thresholds_c": [float(v) for v in thresholds],
         "require_full_preflight_coverage": not bool(args.allow_partial_preflight),
+        "preflight_coverage_hard_min_pct": float(args.preflight_coverage_hard_min_pct),
     }
     if args.dry_run:
         payload["status"] = "DRY_RUN"
         print(json.dumps(payload, indent=2))
         return 0
-    out = run_utci_pipeline(
-        UtciPipelineRunOptions(
-            inputs=UtciRunInputs(
-                iso3=iso3,
-                as_of_date=args.as_of_date,
-                lookback_months=int(args.lookback_months),
-                output_root=Path(args.output_root).expanduser().resolve(),
-                target_adm_level=int(args.target_adm_level),
-            ),
-            admin_path=Path(args.admin_path).expanduser().resolve(),
-            worldpop_path=worldpop_path,
-            admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
-            iso3_field=args.iso3_field,
-            cds_buffer_deg=float(args.cds_buffer_deg),
-            abs_thresholds_c=tuple(float(v) for v in thresholds),
-            k_consecutive_days=int(args.k_consecutive_days),
-            require_full_preflight_coverage=not bool(args.allow_partial_preflight),
+    try:
+        out = run_utci_pipeline(
+            UtciPipelineRunOptions(
+                inputs=UtciRunInputs(
+                    iso3=iso3,
+                    as_of_date=args.as_of_date,
+                    lookback_months=int(args.lookback_months),
+                    output_root=Path(args.output_root).expanduser().resolve(),
+                    target_adm_level=int(args.target_adm_level),
+                ),
+                admin_path=Path(args.admin_path).expanduser().resolve(),
+                worldpop_path=worldpop_path,
+                admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
+                iso3_field=args.iso3_field,
+                cds_buffer_deg=float(args.cds_buffer_deg),
+                abs_thresholds_c=tuple(float(v) for v in thresholds),
+                k_consecutive_days=int(args.k_consecutive_days),
+                require_full_preflight_coverage=not bool(args.allow_partial_preflight),
+                preflight_coverage_hard_min_pct=float(args.preflight_coverage_hard_min_pct),
+                skip_if_complete=bool(args.skip_if_complete),
+            )
         )
-    )
+    except RunAlreadyCompleteError as exc:
+        print(json.dumps({"status": "ALREADY_COMPLETE", "run_dir": str(exc.layout["base"])}, indent=2))
+        return 0
     payload["status"] = "SUCCESS"
     payload["summary"] = out
     print(json.dumps(payload, indent=2))
@@ -637,6 +621,7 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_flood(args: argparse.Namespace) -> int:
+    from .core.pipeline import RunAlreadyCompleteError
     from .hazards.flood import FloodPipelineRunOptions, FloodRunInputs, run_flood_pipeline
 
     iso3 = str(args.iso3).upper()
@@ -656,6 +641,7 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
         "asset_key": args.asset_key,
         "datetime_range": args.datetime_range,
         "worldpop_coverage_min_pct": float(args.worldpop_coverage_min_pct),
+        "worldpop_coverage_hard_min_pct": float(args.worldpop_coverage_hard_min_pct),
         "flood_stac_coverage_min_pct": float(args.flood_stac_coverage_min_pct),
         "flood_stac_coverage_hard_min_pct": float(args.flood_stac_coverage_hard_min_pct),
         "flood_binary_threshold_days": int(args.flood_binary_threshold_days),
@@ -666,35 +652,89 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
         payload["status"] = "DRY_RUN"
         print(json.dumps(payload, indent=2))
         return 0
-    out = run_flood_pipeline(
-        FloodPipelineRunOptions(
-            inputs=FloodRunInputs(
-                iso3=iso3,
-                as_of_date=args.as_of_date,
-                lookback_months=int(args.lookback_months),
-                output_root=Path(args.output_root).expanduser().resolve(),
-                target_adm_level=int(args.target_adm_level),
-            ),
-            admin_path=Path(args.admin_path).expanduser().resolve(),
-            worldpop_path=worldpop_path,
-            admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
-            iso3_field=args.iso3_field,
-            stac_api_url=args.stac_api_url,
-            collection_id=args.collection_id,
-            asset_key=args.asset_key,
-            datetime_range=args.datetime_range,
-            worldpop_coverage_min_pct=float(args.worldpop_coverage_min_pct),
-            flood_stac_coverage_min_pct=float(args.flood_stac_coverage_min_pct),
-            flood_stac_coverage_hard_min_pct=float(args.flood_stac_coverage_hard_min_pct),
-            flood_binary_threshold_days=int(args.flood_binary_threshold_days),
-            chunk_y=int(args.chunk_y),
-            chunk_x=int(args.chunk_x),
+    try:
+        out = run_flood_pipeline(
+            FloodPipelineRunOptions(
+                inputs=FloodRunInputs(
+                    iso3=iso3,
+                    as_of_date=args.as_of_date,
+                    lookback_months=int(args.lookback_months),
+                    output_root=Path(args.output_root).expanduser().resolve(),
+                    target_adm_level=int(args.target_adm_level),
+                ),
+                admin_path=Path(args.admin_path).expanduser().resolve(),
+                worldpop_path=worldpop_path,
+                admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
+                iso3_field=args.iso3_field,
+                stac_api_url=args.stac_api_url,
+                collection_id=args.collection_id,
+                asset_key=args.asset_key,
+                datetime_range=args.datetime_range,
+                worldpop_coverage_min_pct=float(args.worldpop_coverage_min_pct),
+                worldpop_coverage_hard_min_pct=float(args.worldpop_coverage_hard_min_pct),
+                flood_stac_coverage_min_pct=float(args.flood_stac_coverage_min_pct),
+                flood_stac_coverage_hard_min_pct=float(args.flood_stac_coverage_hard_min_pct),
+                flood_binary_threshold_days=int(args.flood_binary_threshold_days),
+                chunk_y=int(args.chunk_y),
+                chunk_x=int(args.chunk_x),
+                skip_if_complete=bool(args.skip_if_complete),
+            )
         )
-    )
+    except RunAlreadyCompleteError as exc:
+        print(json.dumps({"status": "ALREADY_COMPLETE", "run_dir": str(exc.layout["base"])}, indent=2))
+        return 0
     payload["status"] = "SUCCESS"
     payload["summary"] = out
     print(json.dumps(payload, indent=2))
     return 0
+
+
+def _cmd_run_flood_bulk(args: argparse.Namespace) -> int:
+    from .hazards.flood_bulk import FloodBulkRunOptions, build_flood_bulk_plan, run_flood_bulk
+
+    iso3 = str(args.iso3).upper()
+    options = FloodBulkRunOptions(
+        iso3=iso3,
+        start_year=int(args.start_year),
+        end_year=int(args.end_year),
+        output_root=Path(args.output_root),
+        admin_path=Path(args.admin_path),
+        worldpop_path=resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir),
+        target_adm_level=int(args.target_adm_level),
+        admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
+        iso3_field=args.iso3_field,
+        stac_api_url=args.stac_api_url,
+        collection_id=args.collection_id,
+        asset_key=args.asset_key,
+        worldpop_coverage_min_pct=float(args.worldpop_coverage_min_pct),
+        worldpop_coverage_hard_min_pct=float(args.worldpop_coverage_hard_min_pct),
+        flood_stac_coverage_min_pct=float(args.flood_stac_coverage_min_pct),
+        flood_stac_coverage_hard_min_pct=float(args.flood_stac_coverage_hard_min_pct),
+        flood_binary_threshold_days=int(args.flood_binary_threshold_days),
+        chunk_y=int(args.chunk_y),
+        chunk_x=int(args.chunk_x),
+        resume=bool(args.resume),
+        continue_on_error=bool(args.continue_on_error),
+    )
+    if args.dry_run:
+        print(json.dumps({"status": "DRY_RUN", "plan": build_flood_bulk_plan(options)}, indent=2))
+        return 0
+    summary_path = run_flood_bulk(options)
+    with summary_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    failed = sum(row["status"] == "failed" for row in rows)
+    print(
+        json.dumps(
+            {
+                "status": "SUCCESS" if failed == 0 else "PARTIAL_FAILURE",
+                "summary_csv": str(summary_path),
+                "years_total": len(rows),
+                "years_failed": failed,
+            },
+            indent=2,
+        )
+    )
+    return 0 if failed == 0 else 1
 
 
 def _cmd_run_cyclone(args: argparse.Namespace) -> int:
@@ -803,6 +843,47 @@ def _cmd_run_cyclone_bulk(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_iso3_window_args(parser: argparse.ArgumentParser, as_of_date_help: str = "YYYY-MM-DD") -> None:
+    """--iso3/--as-of-date/--lookback-months, identical across every run-*
+    subcommand except run-flood-bulk (which takes --start-year/--end-year
+    instead of a single as-of-date window).
+    """
+    parser.add_argument("--iso3", required=True)
+    parser.add_argument("--as-of-date", required=True, help=as_of_date_help)
+    parser.add_argument("--lookback-months", type=int, default=12)
+
+
+def _add_common_hazard_paths(parser: argparse.ArgumentParser) -> None:
+    """--output-root/--admin-path/--worldpop-path/--worldpop-dir, identical
+    across every run-* subcommand (including run-flood-bulk). Flags whose
+    default genuinely varies by subcommand (--target-adm-level,
+    --admin-layer, --iso3-field) are declared individually by each caller.
+    """
+    parser.add_argument("--output-root", default="./outputs")
+    parser.add_argument(
+        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
+    )
+    parser.add_argument("--worldpop-path", default=None)
+    parser.add_argument("--worldpop-dir", default="./data/population")
+
+
+def _add_postrun_args(parser: argparse.ArgumentParser) -> None:
+    """--run-dir/--skip-metadata-validation/--strict-metadata-validation/
+    --skip-parity, identical across every `<hazard>-postrun` subcommand.
+
+    `--strict-metadata-validation` defaults to True (opt out with
+    `--no-strict-metadata-validation`): a schema-invalid run_metadata.json
+    is a real defect, and the same schema is a hard failure during the
+    pipeline run itself (config.py's validate_run_metadata) -- postrun
+    silently downgrading that to a warning by default made corrupted
+    metadata pass QC unless a caller remembered to opt in to strictness.
+    """
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--skip-metadata-validation", action="store_true")
+    parser.add_argument("--strict-metadata-validation", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--skip-parity", action="store_true")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wia-hazards")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -878,6 +959,11 @@ def build_parser() -> argparse.ArgumentParser:
     batch_preflight.add_argument("--flood-datetime", default="2025-01-01/2025-01-31")
     batch_preflight.add_argument("--flood-mode", choices=["extents", "asset"], default="extents")
     batch_preflight.add_argument("--out-dir", default="./outputs/batch/preflight")
+    batch_preflight.add_argument(
+        "--output-root",
+        default="./outputs",
+        help="Root the eventual pipeline runs will use, for PERF-002's shared CDS-sample cache.",
+    )
     batch_preflight.set_defaults(func=_cmd_batch_preflight)
 
     batch_download_wp = subparsers.add_parser(
@@ -918,12 +1004,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     batch_run.add_argument("--output-root", default="./outputs")
     batch_run.add_argument(
-        "--pipeline", action="append", choices=["spei", "utci", "flood", "violence"], default=None
+        "--pipeline",
+        action="append",
+        choices=["spei", "utci", "flood", "violence", "hydrodrought"],
+        default=None,
     )
     batch_run.add_argument("--spei-cmd-template", default=None)
     batch_run.add_argument("--utci-cmd-template", default=None)
     batch_run.add_argument("--flood-cmd-template", default=None)
     batch_run.add_argument("--violence-cmd-template", default=None)
+    batch_run.add_argument("--hydrodrought-cmd-template", default=None)
     batch_run.add_argument("--max-retries", type=int, default=2)
     batch_run.add_argument("--stop-on-failure", action=argparse.BooleanOptionalAction, default=False)
     batch_run.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
@@ -938,57 +1028,45 @@ def build_parser() -> argparse.ArgumentParser:
         "spei-postrun",
         help="Run SPEI post-run checks (metadata schema + parity report).",
     )
-    spei_postrun.add_argument("--run-dir", required=True)
-    spei_postrun.add_argument("--skip-metadata-validation", action="store_true")
-    spei_postrun.add_argument("--strict-metadata-validation", action="store_true")
-    spei_postrun.add_argument("--skip-parity", action="store_true")
+    _add_postrun_args(spei_postrun)
     spei_postrun.set_defaults(func=_cmd_spei_postrun)
+
+    hydrodrought_postrun = subparsers.add_parser(
+        "hydrodrought-postrun",
+        help="Run hydrological drought (GloFAS/SRI) post-run checks (metadata schema + parity report).",
+    )
+    _add_postrun_args(hydrodrought_postrun)
+    hydrodrought_postrun.set_defaults(func=_cmd_hydrodrought_postrun)
 
     utci_postrun = subparsers.add_parser(
         "utci-postrun",
         help="Run UTCI post-run checks (metadata schema + parity report).",
     )
-    utci_postrun.add_argument("--run-dir", required=True)
-    utci_postrun.add_argument("--skip-metadata-validation", action="store_true")
-    utci_postrun.add_argument("--strict-metadata-validation", action="store_true")
-    utci_postrun.add_argument("--skip-parity", action="store_true")
+    _add_postrun_args(utci_postrun)
     utci_postrun.set_defaults(func=_cmd_utci_postrun)
 
     flood_postrun = subparsers.add_parser(
         "flood-postrun",
         help="Run flood post-run checks (metadata schema + parity report).",
     )
-    flood_postrun.add_argument("--run-dir", required=True)
-    flood_postrun.add_argument("--skip-metadata-validation", action="store_true")
-    flood_postrun.add_argument("--strict-metadata-validation", action="store_true")
-    flood_postrun.add_argument("--skip-parity", action="store_true")
+    _add_postrun_args(flood_postrun)
     flood_postrun.set_defaults(func=_cmd_flood_postrun)
 
     violence_postrun = subparsers.add_parser(
         "violence-postrun",
         help="Run violence post-run checks (metadata schema + parity report).",
     )
-    violence_postrun.add_argument("--run-dir", required=True)
-    violence_postrun.add_argument("--skip-metadata-validation", action="store_true")
-    violence_postrun.add_argument("--strict-metadata-validation", action="store_true")
-    violence_postrun.add_argument("--skip-parity", action="store_true")
+    _add_postrun_args(violence_postrun)
     violence_postrun.set_defaults(func=_cmd_violence_postrun)
 
     run_violence = subparsers.add_parser(
         "run-violence",
         help="Run violence pipeline end-to-end (ACLED buffers -> event count -> mask -> population/admin stats).",
     )
-    run_violence.add_argument("--iso3", required=True)
-    run_violence.add_argument("--as-of-date", required=True, help="YYYY-MM-DD")
-    run_violence.add_argument("--lookback-months", type=int, default=12)
-    run_violence.add_argument("--output-root", default="./outputs")
+    _add_iso3_window_args(run_violence)
+    _add_common_hazard_paths(run_violence)
     run_violence.add_argument("--target-adm-level", type=int, default=2)
-    run_violence.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
-    )
     run_violence.add_argument("--admin-layer", default="admin2")
-    run_violence.add_argument("--worldpop-path", default=None)
-    run_violence.add_argument("--worldpop-dir", default="./data/population")
     run_violence.add_argument("--acled-csv", default=None)
     run_violence.add_argument(
         "--included-event-type",
@@ -997,8 +1075,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Repeat to include multiple ACLED types (default excludes protests).",
     )
     run_violence.add_argument("--worldpop-coverage-min-pct", type=float, default=98.0)
+    run_violence.add_argument("--worldpop-coverage-hard-min-pct", type=float, default=50.0)
     run_violence.add_argument("--mask-threshold-events", type=int, default=1)
     run_violence.add_argument("--all-touched", action=argparse.BooleanOptionalAction, default=True)
+    run_violence.add_argument(
+        "--skip-if-complete",
+        action="store_true",
+        help="Skip recomputation if this run directory already recorded a successful run (opt-in, PROD-001).",
+    )
     run_violence.add_argument("--dry-run", action="store_true")
     run_violence.set_defaults(func=_cmd_run_violence)
 
@@ -1006,39 +1090,77 @@ def build_parser() -> argparse.ArgumentParser:
         "run-spei",
         help="Run SPEI notebook pipeline headlessly with parameterized inputs.",
     )
-    run_spei.add_argument("--iso3", required=True)
-    run_spei.add_argument("--as-of-date", required=True, help="YYYY-MM-DD")
-    run_spei.add_argument("--lookback-months", type=int, default=12)
+    _add_iso3_window_args(run_spei)
     run_spei.add_argument("--target-adm-level", type=int, default=2)
-    run_spei.add_argument("--output-root", default="./outputs")
-    run_spei.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
-    )
+    _add_common_hazard_paths(run_spei)
     run_spei.add_argument("--admin-layer", default=None)
     run_spei.add_argument("--iso3-field", default="iso3")
-    run_spei.add_argument("--worldpop-path", default=None)
-    run_spei.add_argument("--worldpop-dir", default="./data/population")
     run_spei.add_argument("--cds-buffer-deg", type=float, default=0.25)
     run_spei.add_argument("--allow-partial-preflight", action="store_true")
+    run_spei.add_argument("--preflight-coverage-hard-min-pct", type=float, default=50.0)
+    run_spei.add_argument(
+        "--skip-if-complete",
+        action="store_true",
+        help="Skip recomputation if this run directory already recorded a successful run (opt-in, PROD-001).",
+    )
     run_spei.add_argument("--dry-run", action="store_true")
     run_spei.set_defaults(func=_cmd_run_spei)
+
+    run_hydrodrought = subparsers.add_parser(
+        "run-hydrodrought",
+        help="Run the hydrological drought (GloFAS/SRI) pipeline: EWDS discharge -> SRI -> river corridor -> WorldPop -> admin stats.",
+    )
+    _add_iso3_window_args(run_hydrodrought)
+    run_hydrodrought.add_argument("--target-adm-level", type=int, default=2)
+    _add_common_hazard_paths(run_hydrodrought)
+    run_hydrodrought.add_argument("--admin-layer", default=None)
+    run_hydrodrought.add_argument("--iso3-field", default="iso3")
+    run_hydrodrought.add_argument("--hydrorivers-path", default=None)
+    run_hydrodrought.add_argument("--cds-buffer-deg", type=float, default=0.25)
+    run_hydrodrought.add_argument(
+        "--accumulation-months", type=int, default=3, help="Rolling accumulation period (SRI-3 by default)."
+    )
+    run_hydrodrought.add_argument(
+        "--baseline-start-year",
+        type=int,
+        default=1991,
+        help="Baseline start year for the SRI reference distribution (WMO 1991-2020 normal by default).",
+    )
+    run_hydrodrought.add_argument("--baseline-end-year", type=int, default=2020)
+    run_hydrodrought.add_argument(
+        "--corridor-base-width-km",
+        type=float,
+        default=5.0,
+        help="Flat river-corridor half-width in km used to attribute population to a reach.",
+    )
+    run_hydrodrought.add_argument(
+        "--corridor-per-order-km",
+        type=float,
+        default=0.0,
+        help="Additional corridor width per Strahler order above 1 (0 = flat width regardless of reach size).",
+    )
+    run_hydrodrought.add_argument("--default-threshold-key", default="rel_sri_le_m1p5_p2m")
+    run_hydrodrought.add_argument("--allow-partial-preflight", action="store_true")
+    run_hydrodrought.add_argument("--preflight-coverage-hard-min-pct", type=float, default=50.0)
+    run_hydrodrought.add_argument("--ewds-url", default=None, help="Overrides ~/.ewdsapirc / EWDS_API_URL.")
+    run_hydrodrought.add_argument("--ewds-key", default=None, help="Overrides ~/.ewdsapirc / EWDS_API_KEY.")
+    run_hydrodrought.add_argument(
+        "--skip-if-complete",
+        action="store_true",
+        help="Skip recomputation if this run directory already recorded a successful run (opt-in, PROD-001).",
+    )
+    run_hydrodrought.add_argument("--dry-run", action="store_true")
+    run_hydrodrought.set_defaults(func=_cmd_run_hydrodrought)
 
     run_utci = subparsers.add_parser(
         "run-utci",
         help="Run UTCI notebook pipeline headlessly with parameterized inputs.",
     )
-    run_utci.add_argument("--iso3", required=True)
-    run_utci.add_argument("--as-of-date", required=True, help="YYYY-MM-DD")
-    run_utci.add_argument("--lookback-months", type=int, default=12)
+    _add_iso3_window_args(run_utci)
     run_utci.add_argument("--target-adm-level", type=int, default=2)
-    run_utci.add_argument("--output-root", default="./outputs")
-    run_utci.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
-    )
+    _add_common_hazard_paths(run_utci)
     run_utci.add_argument("--admin-layer", default=None)
     run_utci.add_argument("--iso3-field", default="iso3")
-    run_utci.add_argument("--worldpop-path", default=None)
-    run_utci.add_argument("--worldpop-dir", default="./data/population")
     run_utci.add_argument("--cds-buffer-deg", type=float, default=0.25)
     run_utci.add_argument("--k-consecutive-days", type=int, default=3)
     run_utci.add_argument(
@@ -1049,6 +1171,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Repeat to set absolute UTCI thresholds in C (default: 32,38,46).",
     )
     run_utci.add_argument("--allow-partial-preflight", action="store_true")
+    run_utci.add_argument("--preflight-coverage-hard-min-pct", type=float, default=50.0)
+    run_utci.add_argument(
+        "--skip-if-complete",
+        action="store_true",
+        help="Skip recomputation if this run directory already recorded a successful run (opt-in, PROD-001).",
+    )
     run_utci.add_argument("--dry-run", action="store_true")
     run_utci.set_defaults(func=_cmd_run_utci)
 
@@ -1056,18 +1184,11 @@ def build_parser() -> argparse.ArgumentParser:
         "run-flood",
         help="Run flood notebook pipeline headlessly with parameterized inputs.",
     )
-    run_flood.add_argument("--iso3", required=True)
-    run_flood.add_argument("--as-of-date", required=True, help="YYYY-MM-DD")
-    run_flood.add_argument("--lookback-months", type=int, default=12)
+    _add_iso3_window_args(run_flood)
     run_flood.add_argument("--target-adm-level", type=int, default=2)
-    run_flood.add_argument("--output-root", default="./outputs")
-    run_flood.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
-    )
+    _add_common_hazard_paths(run_flood)
     run_flood.add_argument("--admin-layer", default=None)
     run_flood.add_argument("--iso3-field", default="iso3")
-    run_flood.add_argument("--worldpop-path", default=None)
-    run_flood.add_argument("--worldpop-dir", default="./data/population")
     run_flood.add_argument("--stac-api-url", default="https://stac.eodc.eu/api/v1")
     run_flood.add_argument("--collection-id", default="GFM")
     run_flood.add_argument("--asset-key", default="ensemble_flood_extent")
@@ -1075,31 +1196,66 @@ def build_parser() -> argparse.ArgumentParser:
         "--datetime-range", default=None, help="STAC datetime range; defaults to run window."
     )
     run_flood.add_argument("--worldpop-coverage-min-pct", type=float, default=98.0)
+    run_flood.add_argument("--worldpop-coverage-hard-min-pct", type=float, default=50.0)
     run_flood.add_argument("--flood-stac-coverage-min-pct", type=float, default=99.999)
     run_flood.add_argument("--flood-stac-coverage-hard-min-pct", type=float, default=50.0)
     run_flood.add_argument("--flood-binary-threshold-days", type=int, default=0)
     run_flood.add_argument("--chunk-y", type=int, default=1024)
     run_flood.add_argument("--chunk-x", type=int, default=1024)
+    run_flood.add_argument(
+        "--skip-if-complete",
+        action="store_true",
+        help="Skip recomputation if this run directory already recorded a successful run (opt-in, PROD-001).",
+    )
     run_flood.add_argument("--dry-run", action="store_true")
     run_flood.set_defaults(func=_cmd_run_flood)
+
+    run_flood_bulk = subparsers.add_parser(
+        "run-flood-bulk",
+        help="Run standard 12-month flood analyses for an inclusive range of calendar years.",
+    )
+    run_flood_bulk.add_argument("--iso3", default="SSD")
+    run_flood_bulk.add_argument("--start-year", type=int, default=2021)
+    run_flood_bulk.add_argument("--end-year", type=int, default=2025)
+    run_flood_bulk.add_argument("--target-adm-level", type=int, default=2)
+    _add_common_hazard_paths(run_flood_bulk)
+    run_flood_bulk.add_argument("--admin-layer", default=None)
+    run_flood_bulk.add_argument("--iso3-field", default="iso3")
+    run_flood_bulk.add_argument("--stac-api-url", default="https://stac.eodc.eu/api/v1")
+    run_flood_bulk.add_argument("--collection-id", default="GFM")
+    run_flood_bulk.add_argument("--asset-key", default="ensemble_flood_extent")
+    run_flood_bulk.add_argument("--worldpop-coverage-min-pct", type=float, default=98.0)
+    run_flood_bulk.add_argument("--worldpop-coverage-hard-min-pct", type=float, default=50.0)
+    run_flood_bulk.add_argument("--flood-stac-coverage-min-pct", type=float, default=99.999)
+    run_flood_bulk.add_argument("--flood-stac-coverage-hard-min-pct", type=float, default=50.0)
+    run_flood_bulk.add_argument("--flood-binary-threshold-days", type=int, default=0)
+    run_flood_bulk.add_argument("--chunk-y", type=int, default=1024)
+    run_flood_bulk.add_argument("--chunk-x", type=int, default=1024)
+    run_flood_bulk.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reuse complete annual outputs (default: enabled).",
+    )
+    run_flood_bulk.add_argument(
+        "--continue-on-error",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Record a failed year and continue with the next (default: enabled).",
+    )
+    run_flood_bulk.add_argument("--dry-run", action="store_true")
+    run_flood_bulk.set_defaults(func=_cmd_run_flood_bulk)
 
     run_cyclone = subparsers.add_parser(
         "run-cyclone",
         help="Run the HI-06 cyclone pipeline from IBTrACS wind radii and WorldPop.",
     )
-    run_cyclone.add_argument("--iso3", required=True)
-    run_cyclone.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
-    run_cyclone.add_argument("--lookback-months", type=int, default=12)
+    _add_iso3_window_args(run_cyclone, as_of_date_help="Inclusive YYYY-MM-DD end date")
     run_cyclone.add_argument("--ibtracs-path", default=None)
     run_cyclone.add_argument("--ibtracs-dir", default="./data/cyclone")
-    run_cyclone.add_argument("--worldpop-path", default=None)
-    run_cyclone.add_argument("--worldpop-dir", default="./data/population")
-    run_cyclone.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
-    )
+    _add_common_hazard_paths(run_cyclone)
     run_cyclone.add_argument("--target-adm-level", type=int, default=None)
     run_cyclone.add_argument("--admin-layer", default=None)
-    run_cyclone.add_argument("--output-root", default="./outputs")
     run_cyclone.add_argument(
         "--config",
         default=None,
@@ -1124,17 +1280,10 @@ def build_parser() -> argparse.ArgumentParser:
         "run-earthquake",
         help="Run the HI-EQ pipeline from USGS ShakeMaps and WorldPop.",
     )
-    run_earthquake.add_argument("--iso3", required=True)
-    run_earthquake.add_argument("--as-of-date", required=True, help="Inclusive YYYY-MM-DD end date")
-    run_earthquake.add_argument("--lookback-months", type=int, default=12)
-    run_earthquake.add_argument("--worldpop-path", default=None)
-    run_earthquake.add_argument("--worldpop-dir", default="./data/population")
-    run_earthquake.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
-    )
+    _add_iso3_window_args(run_earthquake, as_of_date_help="Inclusive YYYY-MM-DD end date")
+    _add_common_hazard_paths(run_earthquake)
     run_earthquake.add_argument("--target-adm-level", type=int, default=None)
     run_earthquake.add_argument("--admin-layer", default=None)
-    run_earthquake.add_argument("--output-root", default="./outputs")
     run_earthquake.add_argument(
         "--config",
         default=None,

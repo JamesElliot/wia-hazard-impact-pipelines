@@ -9,14 +9,7 @@ extracts. In particular, raw ACLED records must not be redistributed through
 GitHub. Users are responsible for obtaining access and complying with the
 source provider's current licence and attribution requirements.
 
-The default local layout is:
-
-```text
-data/
-├── cod-ab/       # administrative boundary files
-├── population/   # WorldPop rasters
-└── violence/     # user-supplied ACLED exports and ISO lookup
-```
-
-Batch manifests belong in `configs/`, not in this directory. Detailed source,
-version, filename, and access guidance will live in `docs/data-sources.md`.
+Batch manifests belong in `configs/`, not in this directory. See the "Local
+layout" section of `docs/data-sources.md` for the full current directory
+layout (administrative boundaries, WorldPop, ACLED, HydroRIVERS/HydroLAKES,
+etc.) plus detailed per-source version, filename, and access guidance.

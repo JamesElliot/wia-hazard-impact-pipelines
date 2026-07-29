@@ -31,6 +31,31 @@ default binary mask marks pixels with one or more buffered events as affected.
 - footprint and QC artifacts;
 - standardized run metadata.
 
+## Input file discovery
+
+ACLED exports are obtained manually (there is no automated download step),
+so a given export's filename depends entirely on how and when it was
+downloaded — there is no standard filename to rely on. **Always pass
+`--acled-csv <path>` explicitly** when triggering the pipeline, pointing at
+the specific export file you intend to use for that run.
+
+If `--acled-csv` is omitted, the pipeline falls back to guessing a file under
+`data/violence/`: first an exact-match convention
+(`acled_<iso3 lowercase>_<window_start no-dashes>-<window_end no-dashes>.csv`,
+e.g. `acled_grd_20250101-20251231.csv`), then two legacy notebook naming
+patterns, then simply the most recently modified file matching
+`acled_<iso3>_*.csv` in that directory. This fallback exists for
+convenience/back-compatibility with older notebook runs and should not be
+relied on for real runs — it can silently pick an export covering the wrong
+dates or an out-of-date file if more than one export for the same country
+exists locally. If no fallback candidate exists, the run fails with
+`FileNotFoundError: Missing ACLED CSV`.
+
+`event_type` values in the CSV must match ACLED's own schema strings exactly:
+`Battles`, `Explosions/Remote violence`, `Violence against civilians`,
+`Riots`, `Protests`. Any other value raises
+`ValueError: Unsupported ACLED event_type for proximity buffer`.
+
 ## Important implementation choices
 
 - Raw ACLED records are not distributable through this repository.

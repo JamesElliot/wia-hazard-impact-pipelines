@@ -1,20 +1,28 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from time import perf_counter
 from typing import Any
 
 from ..config import RunConfig
-from ..core.admin import admin_layer_label, admin_pcode_label, resolve_admin_level, resolve_admin_pcode_column
+from ..core.admin import (
+    admin_layer_label,
+    admin_pcode_label,
+    load_admin_layer,
+    resolve_admin_level,
+    resolve_admin_pcode_column,
+)
+from ..core.aggregation import labelled_sum
+from ..core.assets import checksum_path, shared_cache_root
 from ..core.pipeline import (
     build_hazard_run_context,
     record_artifact,
     standardize_admin_summary,
     sync_run_metadata,
 )
-from .coverage_checks import check_worldpop_coverage
+from ..core.progress import make_progress_writer
+from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate
+from .violence_visualize import write_run_maps
 
 
 @dataclass(frozen=True)
@@ -42,9 +50,12 @@ def build_violence_run_context(
     inputs: ViolenceRunInputs,
     create_dirs: bool = True,
     write_metadata: bool = True,
+    skip_if_complete: bool = False,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    return build_hazard_run_context(config, create_dirs=create_dirs, write_metadata=write_metadata)
+    return build_hazard_run_context(
+        config, create_dirs=create_dirs, write_metadata=write_metadata, skip_if_complete=skip_if_complete
+    )
 
 
 def acled_buffer_km(event_type: str, fatalities: float) -> int:
@@ -61,35 +72,6 @@ def acled_buffer_km(event_type: str, fatalities: float) -> int:
     if event_type == "Protests":
         return 1
     raise ValueError(f"Unsupported ACLED event_type for proximity buffer: '{event_type}'")
-
-
-def make_progress_writer(status_path: Path, stage: str, total: int):
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    started_at = perf_counter()
-    total = max(0, int(total))
-
-    def _write(processed: int, ok: int = 0, failed: int = 0, current: str | None = None) -> dict[str, Any]:
-        processed_i = max(0, int(processed))
-        elapsed = perf_counter() - started_at
-        rate = (processed_i / elapsed) if elapsed > 0 else 0.0
-        remaining = max(0, total - processed_i)
-        eta = remaining / rate if rate > 0 else None
-        payload = {
-            "stage": stage,
-            "processed": processed_i,
-            "total": total,
-            "ok": int(ok),
-            "failed": int(failed),
-            "pct_complete": (float(processed_i) / float(total) * 100.0) if total else 100.0,
-            "elapsed_seconds": round(float(elapsed), 2),
-            "rate_items_per_second": round(float(rate), 4),
-            "eta_seconds": None if eta is None else round(float(eta), 2),
-            "current": current,
-        }
-        status_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        return payload
-
-    return _write
 
 
 DEFAULT_SUPPORTED_EVENT_TYPES = (
@@ -127,17 +109,6 @@ def _resolve_acled_csv_default(iso3: str, window_start: str, window_end: str) ->
     return default_path
 
 
-def _load_admin(admin_path: Path, layer: str):
-    import geopandas as gpd
-
-    if str(admin_path).lower().endswith(".zip"):
-        return gpd.read_file(f"zip://{admin_path.resolve()}", layer=layer)
-    try:
-        return gpd.read_file(admin_path, layer=layer)
-    except Exception:
-        return gpd.read_file(admin_path)
-
-
 def run_violence_pipeline(
     inputs: ViolenceRunInputs,
     admin_path: Path,
@@ -146,9 +117,13 @@ def run_violence_pipeline(
     admin_layer: str = "admin2",
     included_event_types: list[str] | None = None,
     worldpop_coverage_min_pct: float = 98.0,
+    worldpop_coverage_hard_min_pct: float = 50.0,
     mask_threshold_events: int = 1,
     all_touched: bool = True,
+    skip_if_complete: bool = False,
 ) -> dict[str, Any]:
+    import warnings
+
     import geopandas as gpd
     import matplotlib.pyplot as plt
     import numpy as np
@@ -158,11 +133,12 @@ def run_violence_pipeline(
     from rasterio.enums import MergeAlg
     from rasterio.features import rasterize
     from shapely.geometry import box
-    from rasterstats import zonal_stats
     from shapely.geometry import Point
     from shapely.ops import unary_union
 
-    ctx = build_violence_run_context(inputs=inputs, create_dirs=True, write_metadata=True)
+    ctx = build_violence_run_context(
+        inputs=inputs, create_dirs=True, write_metadata=True, skip_if_complete=skip_if_complete
+    )
     config = ctx["config"]
     layout = ctx["layout"]
     metadata = ctx["metadata"]
@@ -237,6 +213,14 @@ def run_violence_pipeline(
         "supported_event_types": list(DEFAULT_SUPPORTED_EVENT_TYPES),
         "included_event_types": selected_types,
     }
+    # DOC-006/PROD-003: checksum WorldPop/admin inputs for reproducibility
+    # provenance, matching cyclone/earthquake's existing pattern. Added as
+    # sibling keys rather than restructuring admin_path/worldpop_tif into
+    # nested {"path", "sha256"} dicts, since nothing else in this codebase
+    # depends on the existing flat shape, but changing it anyway isn't worth
+    # the risk for a metadata-only addition. cache_dir avoids re-hashing the
+    # ~988MB admin file on every run in a batch.
+    checksum_cache_dir = shared_cache_root(config.output_root, "checksums")
     metadata.setdefault("inputs", {})
     metadata["inputs"].update(
         {
@@ -244,6 +228,8 @@ def run_violence_pipeline(
             "admin_layer": admin_layer,
             "worldpop_tif": str(worldpop_path),
             "acled_csv": str(acled_path),
+            "admin_sha256": checksum_path(admin_path, cache_dir=checksum_cache_dir),
+            "worldpop_sha256": checksum_path(worldpop_path, cache_dir=checksum_cache_dir),
         }
     )
     metadata.setdefault("paths", {})
@@ -296,7 +282,7 @@ def run_violence_pipeline(
     )
 
     # Admin and preflight
-    admin = _load_admin(admin_path, layer=admin_layer)
+    admin = load_admin_layer(admin_path, layer=admin_layer)
     if "iso3" not in admin.columns:
         raise KeyError("Admin layer must include 'iso3' column.")
     source_pcode_col = resolve_admin_pcode_column(admin.columns, adm_level)
@@ -312,7 +298,10 @@ def run_violence_pipeline(
     wp_cov = check_worldpop_coverage(admin_bounds, worldpop_path)
     n_inside = int(events_wgs84.within(admin_union).sum())
     metadata["preflight_coverage"] = {
-        "thresholds": {"worldpop_coverage_min_pct": float(worldpop_coverage_min_pct)},
+        "thresholds": {
+            "worldpop_coverage_min_pct": float(worldpop_coverage_min_pct),
+            "worldpop_coverage_hard_min_pct": float(worldpop_coverage_hard_min_pct),
+        },
         "worldpop": wp_cov,
         "acled_events": {
             "n_events_after_filters": int(len(events_wgs84)),
@@ -320,10 +309,24 @@ def run_violence_pipeline(
             "event_bounds_4326": [float(v) for v in events_wgs84.total_bounds],
         },
     }
-    if float(wp_cov["coverage_pct"]) < float(worldpop_coverage_min_pct):
+    wp_gate = evaluate_coverage_gate(
+        wp_cov["coverage_pct"], worldpop_coverage_min_pct, worldpop_coverage_hard_min_pct
+    )
+    if wp_gate == "fail":
+        _write_metadata()
         raise RuntimeError(
-            f"WorldPop coverage below threshold: {wp_cov['coverage_pct']:.3f}% < {worldpop_coverage_min_pct:.3f}%"
+            "WorldPop coverage below hard minimum: "
+            f"{wp_cov['coverage_pct']:.3f}% < {worldpop_coverage_hard_min_pct:.3f}%"
         )
+    if wp_gate == "warn":
+        warn_msg = (
+            "WorldPop coverage below target threshold; continuing because it meets the hard minimum. "
+            f"Observed={wp_cov['coverage_pct']:.3f}% Target={worldpop_coverage_min_pct:.3f}% "
+            f"HardMin={worldpop_coverage_hard_min_pct:.3f}%"
+        )
+        warnings.warn(warn_msg, RuntimeWarning, stacklevel=2)
+        metadata.setdefault("warnings", [])
+        metadata["warnings"].append({"stage": "preflight_coverage", "message": warn_msg})
     if n_inside < 1:
         raise RuntimeError("No filtered ACLED events intersect admin boundaries.")
 
@@ -488,23 +491,37 @@ def run_violence_pipeline(
     _add_artifact("qc_mask_worldpop", qc_mask_worldpop_png, "Violence mask overlay on WorldPop")
 
     # Admin zonal stats.
+    # PERF-006: rasterize admin polygons once (each pixel labelled 1..n_admin)
+    # instead of three separate rasterstats.zonal_stats calls, each of which
+    # independently rasterizes/window-extracts the same geometries. all_touched
+    # is fixed at False for all three (as it was for all three zonal_stats
+    # calls before), so there's no earthquake-style double-counting pitfall
+    # here (see PERF-006's earthquake entry) to worry about. wp_arr/
+    # affected_pop/pop_weighted_count already have nodata zeroed out in
+    # place (line ~404 above), matching each zonal_stats call's own
+    # nodata-exclusion -- a zeroed-out pixel contributes nothing to a sum
+    # either way, so no extra valid_mask is needed to reproduce the same
+    # totals.
     write_zon = make_progress_writer(zonal_status, f"{admin_label}_zonal_stats", total=5)
     write_zon(0, current="start")
     admin_zs = admin_units.to_crs("EPSG:4326") if str(admin_units.crs).upper() != "EPSG:4326" else admin_units
-    zs_total = zonal_stats(admin_zs, str(worldpop_path), stats=["sum"], nodata=wp_nodata, all_touched=False)
+    n_admin_zs = len(admin_zs)
+    admin_id_zs = rasterize(
+        shapes=[(geom, i + 1) for i, geom in enumerate(admin_zs.geometry)],
+        out_shape=wp_arr.shape,
+        transform=wp_transform,
+        fill=0,
+        dtype="int32",
+        all_touched=False,
+    )
+    pop_total = np.asarray(labelled_sum(admin_id_zs, wp_arr, n_labels=n_admin_zs), dtype="float64")
     write_zon(1, ok=1, current="zonal_total_done")
-    zs_aff = zonal_stats(admin_zs, str(pop_affected_tif), stats=["sum"], nodata=0, all_touched=False)
+    pop_aff = np.asarray(labelled_sum(admin_id_zs, affected_pop, n_labels=n_admin_zs), dtype="float64")
     write_zon(2, ok=2, current="zonal_affected_done")
-    zs_weighted = zonal_stats(
-        admin_zs, str(pop_weighted_count_tif), stats=["sum"], nodata=0, all_touched=False
+    pop_weighted_sum = np.asarray(
+        labelled_sum(admin_id_zs, pop_weighted_count, n_labels=n_admin_zs), dtype="float64"
     )
     write_zon(3, ok=3, current="zonal_weighted_done")
-
-    pop_total = np.array([r["sum"] if r["sum"] is not None else 0.0 for r in zs_total], dtype="float64")
-    pop_aff = np.array([r["sum"] if r["sum"] is not None else 0.0 for r in zs_aff], dtype="float64")
-    pop_weighted_sum = np.array(
-        [r["sum"] if r["sum"] is not None else 0.0 for r in zs_weighted], dtype="float64"
-    )
     pct_aff = np.where(pop_total > 0, pop_aff / pop_total * 100.0, np.nan)
     pop_weighted_mean = np.where(pop_total > 0, pop_weighted_sum / pop_total, np.nan)
     admin_df = pd.DataFrame(
@@ -530,11 +547,21 @@ def run_violence_pipeline(
     admin_df.to_csv(admin_stats_csv, index=False)
     write_zon(4, ok=4, current=f"{admin_label}_table_written")
     _add_artifact("admin_stats", admin_stats_csv, f"{admin_label.title()} violence population summary")
-    _add_artifact(
-        f"{admin_label}_stats", admin_stats_csv, f"{admin_label.title()} violence population summary"
+
+    map_paths = write_run_maps(
+        admin_units,
+        admin_df,
+        event_count_tif,
+        layout["maps"],
+        iso3=config.iso3,
+        pcode_column=pcode_label,
+        admin_level=adm_level,
+        window_start=config.window_start.isoformat(),
+        window_end=config.window_end.isoformat(),
     )
-    if adm_level == 2:
-        _add_artifact("adm2_stats", admin_stats_csv, "ADM2 violence population summary")
+    for kind, path in map_paths.items():
+        _add_artifact(kind, path, f"{admin_label.title()} violence indicator map")
+
     metadata["admin_stats"] = {
         "admin_stats_csv": str(admin_stats_csv),
         "admin_layer": admin_layer,
@@ -549,18 +576,6 @@ def run_violence_pipeline(
             admin_df["pop_weighted_event_count_sum"].sum() / max(admin_df["pop_total"].sum(), 1.0)
         ),
     }
-    metadata[f"{admin_label}_stats"] = dict(metadata["admin_stats"])
-    if adm_level == 2:
-        metadata["adm2_stats"] = {
-            "adm2_stats_csv": str(admin_stats_csv),
-            "n_adm2": int(len(admin_df)),
-            "adm2_pop_total_sum": float(admin_df["pop_total"].sum()),
-            "adm2_pop_affected_sum": float(admin_df["pop_affected"].sum()),
-            "adm2_pop_weighted_event_count_sum": float(admin_df["pop_weighted_event_count_sum"].sum()),
-            "adm2_pop_weighted_mean_event_count": float(
-                admin_df["pop_weighted_event_count_sum"].sum() / max(admin_df["pop_total"].sum(), 1.0)
-            ),
-        }
     metadata["acled_events"] = {
         "rows_loaded": int(len(raw_df)),
         "rows_after_filter": int(len(df)),
@@ -577,6 +592,10 @@ def run_violence_pipeline(
     }
     write_zon(5, ok=5, current="complete")
 
+    # PROD-001: terminal marker so a *future* run can tell this one genuinely
+    # finished (vs. the run_metadata.json build_hazard_run_context already
+    # wrote at the very start of this run, before any real computation).
+    metadata["status"] = "SUCCESS"
     _write_metadata()
     outputs = {
         "event_count_tif": str(event_count_tif),
@@ -584,14 +603,12 @@ def run_violence_pipeline(
         "pop_affected_tif": str(pop_affected_tif),
         "pop_weighted_event_count_tif": str(pop_weighted_count_tif),
         "admin_stats_csv": str(admin_stats_csv),
-        f"{admin_label}_stats_csv": str(admin_stats_csv),
         "qc_coverage_png": str(qc_coverage_png),
         "qc_mask_png": str(qc_mask_png),
         "qc_mask_worldpop_png": str(qc_mask_worldpop_png),
         "run_metadata": str(metadata_path),
+        **{kind: str(path) for kind, path in map_paths.items()},
     }
-    if adm_level == 2:
-        outputs["adm2_stats_csv"] = str(admin_stats_csv)
 
     return {
         "run_dir": str(run_dir),

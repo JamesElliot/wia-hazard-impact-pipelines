@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 
-PIPELINES = ("spei", "utci", "flood", "violence")
+PIPELINES = ("spei", "utci", "flood", "violence", "hydrodrought")
 
 
 def _now_utc() -> str:
@@ -31,8 +31,54 @@ def _load_report_df(path_or_df: str | Path | pd.DataFrame) -> pd.DataFrame:
     return pd.read_csv(p)
 
 
-def _step_key(task_id: int, pipeline: str) -> str:
-    return f"{task_id}:{pipeline}"
+_PIPELINE_HAZARD_DIR = {
+    "spei": "drought",
+    "utci": "heat",
+    "flood": "flood",
+    "violence": "violence",
+    "hydrodrought": "hydrodrought",
+}
+
+
+def _has_valid_run_metadata(
+    output_root: Path, iso3: str, as_of_date: str, lookback_months: int, pipeline: str
+) -> bool:
+    """PERF-011: a prior SUCCESS row in batch_run_report.csv is trusted on resume only
+    if this also holds. Guards against silently skipping a step whose run_metadata.json
+    was truncated, deleted, or otherwise corrupted after the run reported success."""
+    from ..config import RunConfig, build_run_paths, validate_run_metadata
+
+    hazard = _PIPELINE_HAZARD_DIR.get(pipeline, pipeline)
+    config = RunConfig(
+        hazard=hazard,
+        iso3=iso3,
+        as_of_date=as_of_date,
+        lookback_months=lookback_months,
+        output_root=output_root,
+    )
+    metadata_path = build_run_paths(config)["base"] / "run_metadata.json"
+    if not metadata_path.exists():
+        return False
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        validate_run_metadata(payload)
+    except Exception:
+        return False
+    return True
+
+
+def _step_key(iso3: str, as_of_date: str, lookback_months: int, pipeline: str) -> str:
+    """Identify a step by what it actually runs, not by manifest row position.
+
+    task_id is a 1-based row index within whatever manifest produced the
+    readiness/preflight report - it resets to 1 for every manifest. Keying
+    resume state on task_id alone means resuming into a report left over
+    from a *different* manifest (different countries/windows, same task_id
+    range) silently matches the wrong steps and skips real execution. iso3 +
+    as_of_date + lookback_months + pipeline is what actually determines a
+    run's identity (see RunConfig.run_id), so key on that instead.
+    """
+    return f"{str(iso3).upper()}:{as_of_date}:{lookback_months}:{pipeline}"
 
 
 def _normalize_pipeline_list(pipelines: list[str] | None) -> list[str]:
@@ -106,6 +152,18 @@ def _default_spei_cmd(admin_path: Path, output_root: Path) -> str:
 def _default_utci_cmd(admin_path: Path, output_root: Path) -> str:
     return (
         "env PYTHONPATH=src python scripts/run_utci_pipeline.py "
+        "--iso3 {iso3} "
+        "--as-of-date {as_of_date} "
+        "--lookback-months {lookback_months} "
+        "--target-adm-level {target_adm_level} "
+        "--admin-path " + str(admin_path) + " "
+        "--output-root " + str(output_root)
+    )
+
+
+def _default_hydrodrought_cmd(admin_path: Path, output_root: Path) -> str:
+    return (
+        "env PYTHONPATH=src python scripts/run_hydrodrought_pipeline.py "
         "--iso3 {iso3} "
         "--as-of-date {as_of_date} "
         "--lookback-months {lookback_months} "
@@ -214,6 +272,14 @@ def run_batch_execution(
         "utci": _default_utci_cmd(admin_path=admin_path, output_root=output_root),
         "flood": _default_flood_cmd(admin_path=admin_path, output_root=output_root),
         "violence": _default_violence_cmd(admin_path=admin_path, output_root=output_root),
+        # Not wired into batch/readiness.py or batch/preflight.py's hazard-
+        # specific coverage checks yet (those are coupled to the four
+        # pipelines above) -- see docs/hydrodrought-implementation-plan.md s4.
+        # Without a "can_run_hydrodrought" readiness column, every
+        # hydrodrought step is reported ineligible/skipped rather than run,
+        # which is safe but means --pipeline hydrodrought currently requires
+        # driving run_hydrodrought_pipeline directly per country instead.
+        "hydrodrought": _default_hydrodrought_cmd(admin_path=admin_path, output_root=output_root),
     }
     if command_templates:
         templates.update(command_templates)
@@ -229,6 +295,12 @@ def run_batch_execution(
         note="Batch run started.",
     )
 
+    current_step_keys = {
+        _step_key(str(row["iso3"]), str(row["as_of_date"]), int(row["lookback_months"]), pipeline)
+        for _, row in merged.iterrows()
+        for pipeline in pipeline_order
+    }
+
     existing_rows: list[dict[str, Any]] = []
     existing_done: set[str] = set()
     report_path = out_dir / "batch_run_report.csv"
@@ -237,13 +309,40 @@ def run_batch_execution(
         if not prior.empty:
             latest_rows_by_step: dict[str, dict[str, Any]] = {}
             for _, r in prior.iterrows():
-                step = _step_key(int(r["task_id"]), str(r["pipeline"]))
-                latest_rows_by_step[step] = r.to_dict()
-            existing_rows = list(latest_rows_by_step.values())
-            for r in existing_rows:
-                step = _step_key(int(r["task_id"]), str(r["pipeline"]))
-                if str(r.get("status", "")).upper() in {"SUCCESS", "SKIP", "DRY_RUN"}:
+                step = _step_key(
+                    str(r["iso3"]), str(r["as_of_date"]), int(r["lookback_months"]), str(r["pipeline"])
+                )
+                # Only carry forward rows that belong to *this* run's tasks.
+                # A report left over from a different manifest (different
+                # countries/windows) must not silently mark this run's steps
+                # as already done, or inflate this run's totals.
+                if step in current_step_keys:
+                    latest_rows_by_step[step] = r.to_dict()
+            for step, r in latest_rows_by_step.items():
+                status = str(r.get("status", "")).upper()
+                if status in {"SKIP", "DRY_RUN"}:
+                    existing_rows.append(r)
                     existing_done.add(step)
+                elif status == "SUCCESS":
+                    if _has_valid_run_metadata(
+                        output_root,
+                        str(r["iso3"]),
+                        str(r["as_of_date"]),
+                        int(r["lookback_months"]),
+                        str(r["pipeline"]),
+                    ):
+                        existing_rows.append(r)
+                        existing_done.add(step)
+                    # else: drop this stale SUCCESS row entirely (PERF-011) --
+                    # its run_metadata.json is missing/invalid, so the step
+                    # below will re-execute and append a fresh row for it;
+                    # keeping the stale row here would double-count it.
+                else:
+                    # Any other recorded status (e.g. FAILED) was never
+                    # trusted as "done" before this change either; keep the
+                    # existing pre-PERF-011 behavior of carrying it forward
+                    # unchanged (out of scope here).
+                    existing_rows.append(r)
 
     rows: list[dict[str, Any]] = list(existing_rows)
     completed = len(existing_done)
@@ -253,7 +352,7 @@ def run_batch_execution(
     for _, row in merged.sort_values(["task_id"]).iterrows():
         ctx = _build_context(row)
         for pipeline in pipeline_order:
-            step = _step_key(ctx["task_id"], pipeline)
+            step = _step_key(ctx["iso3"], ctx["as_of_date"], ctx["lookback_months"], pipeline)
             if resume and step in existing_done:
                 continue
 

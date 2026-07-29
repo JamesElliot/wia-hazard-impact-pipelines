@@ -40,6 +40,17 @@
 - [x] Replace transition notebook-backed runner with pure module `run_flood_pipeline`.
 - [ ] Add one golden regression case and lock expected key outputs.
 
+### Hydrological Drought (GloFAS-SRI)
+- [x] Add `core/ewds.py` (EWDS client), `core/rivers.py` (river-corridor population attribution), `core/standardize.py` (shared WMO-1173 standardization math).
+- [x] Add `src/wia_pipelines/hazards/hydrodrought.py` + `hydrodrought_parity.py` + `hydrodrought_visualize.py`.
+- [x] Add `wia-hazards run-hydrodrought ...` CLI runner, `hydrodrought-postrun` command, and script entrypoint `scripts/run_hydrodrought_pipeline.py`.
+- [x] Add `hydrodrought` to `RunConfig.SUPPORTED_HAZARDS`, `schemas/run_metadata.schema.json`, and `batch/execute.py: PIPELINES`.
+- [x] Add unit tests (`test_hazard_hydrodrought.py`, `test_core_rivers.py`, `test_core_standardize.py`, `test_core_ewds.py`).
+- [ ] Export hydrodrought from `hazards/__init__.py`'s public API (not yet wired, unlike the other four hazards).
+- [ ] Add one golden regression case and lock expected key outputs.
+- [ ] Resolve the open discharge-vs-runoff variable question (see `docs/indicators/hydrodrought-glofas-sri.md`) with WIA methodology review before promoting past prototype status.
+- [ ] Validate the river-corridor buffer width against observed WASH impacts (currently an unvalidated default, per `docs/indicators/hydrodrought-glofas-sri.md`).
+
 ### Violence (ACLED)
 - [x] Add preflight checks and standardized post-run parity.
 - [x] Add event-count raster and derived binary mask flow.
@@ -54,7 +65,7 @@
 - [x] Add shared multi-country batch execution runner (`batch-run`) with retries, resume, heartbeat status JSON, and per-step logs.
 - [ ] Ensure all pipelines emit identical output contract fields in `run_metadata.json`.
 - [ ] Add CI workflow for tests + smoke runs.
-- [ ] Add docs for common failure modes (CDS auth, STAC/network, CRS/alignment, import paths).
+- [ ] Add docs for common failure modes (CDS auth, STAC/network, import paths); `docs/troubleshooting.md` already covers CRS/alignment and nodata handling.
 - [ ] Finalize data management guidance (what stays in repo vs external storage).
 
 ## Documentation Plan

@@ -53,7 +53,7 @@
       "properties": {
         "hazard": {
           "type": "string",
-          "enum": ["cyclone", "drought", "earthquake", "flood", "heat", "violence"]
+          "enum": ["cyclone", "drought", "earthquake", "flood", "heat", "hydrodrought", "violence"]
         },
         "iso3": {
           "type": "string",
@@ -89,7 +89,7 @@
     },
     "paths": {
       "type": "object",
-      "required": ["base", "raw", "rasters", "tables", "qc", "logs", "cache"],
+      "required": ["base", "raw", "intermediate", "rasters", "tables", "qc", "logs", "maps", "cache"],
       "properties": {
         "base": { "type": "string", "minLength": 1 },
         "raw": { "type": "string", "minLength": 1 },
@@ -98,6 +98,7 @@
         "tables": { "type": "string", "minLength": 1 },
         "qc": { "type": "string", "minLength": 1 },
         "logs": { "type": "string", "minLength": 1 },
+        "maps": { "type": "string", "minLength": 1 },
         "cache": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": true

@@ -21,6 +21,7 @@ rather than defining their own reporting identity.
 | Hazard ID | Pipeline ID | Default reporting rule |
 |---|---|---|
 | `drought` | `water_scarcity_spei3` | Any month with SPEI3 ≤ −1.5 |
+| `hydrodrought` | `hydro_drought_glofas_sri` | River-corridor population near a GloFAS reach with SRI3 ≤ −1.5 for ≥2 consecutive months |
 | `earthquake` | `earthquake_usgs_shakemap` | Maximum ShakeMap intensity reaches MMI VI |
 | `heat` | `extreme_heat_utci` | UTCI > 32°C for at least three consecutive days |
 | `flood` | `gfm_flood` | Flooded-day count > 0 |
@@ -45,7 +46,13 @@ Administrative population is assigned by pixel centre (`all_touched=False`) in
 every pipeline. This prevents boundary cells being assigned differently across
 hazards or counted in two adjacent units. Hazard-footprint rasterization remains
 method-specific: for example, violence buffers use all-touched inclusion by
-default, while cyclone wind swaths use pixel-centre inclusion.
+default, while cyclone wind swaths use pixel-centre inclusion. Hydrological
+drought is the one hazard whose footprint is not a direct rasterization of its
+source grid: GloFAS is a river-network model, so its per-reach SRI status is
+propagated to population pixels via a river-corridor buffer and nearest-reach
+assignment (`core.rivers`) rather than resampling the sparse discharge grid --
+see `docs/hydrodrought-implementation-plan.md` for why a naive resample would
+misattribute drought status to populations far from the affected reach.
 
 Missing hazard observations are not equivalent to observed zero hazard. Each
 pipeline must report coverage and preserve nodata through alignment whenever the

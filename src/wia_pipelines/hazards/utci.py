@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..config import RunConfig
 from ..core.admin import admin_bounds_hash, filter_admin_for_iso3, load_admin_layer
+from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
 from ..core.pipeline import (
     build_hazard_run_context,
@@ -15,11 +16,10 @@ from ..core.pipeline import (
     standardize_admin_summary,
     sync_run_metadata,
 )
-from .coverage_checks import (
-    check_worldpop_coverage,
-    run_cds_single_month_check,
-    utci_sample_request,
-)
+from ..core.progress import make_progress_writer
+from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate, run_cds_single_month_check
+from .coverage_requests import utci_sample_request
+from .utci_visualize import write_run_maps
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,12 @@ def build_utci_run_context(
     inputs: UtciRunInputs,
     create_dirs: bool = True,
     write_metadata: bool = True,
+    skip_if_complete: bool = False,
 ) -> dict[str, Any]:
     config = inputs.to_run_config()
-    return build_hazard_run_context(config, create_dirs=create_dirs, write_metadata=write_metadata)
+    return build_hazard_run_context(
+        config, create_dirs=create_dirs, write_metadata=write_metadata, skip_if_complete=skip_if_complete
+    )
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,8 @@ class UtciPipelineRunOptions:
     default_reporting_threshold_c: float = 32.0
     k_consecutive_days: int = 3
     require_full_preflight_coverage: bool = True
+    preflight_coverage_hard_min_pct: float = 50.0
+    skip_if_complete: bool = False
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -139,7 +144,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     import xarray as xr
     from rasterio.features import rasterize
 
-    from ..core.cds import download_cds, ensure_downloads, extract_zip_to_dir
+    from ..core.cds import download_month_with_fallback, ensure_downloads, extract_zip_to_dir
     from ..core.aggregation import labelled_sum
     from ..core.raster_ops import reproject_array_to_grid, write_array_geotiff
 
@@ -152,7 +157,9 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     if int(options.k_consecutive_days) < 1:
         raise ValueError(f"k_consecutive_days must be >=1, got {options.k_consecutive_days}")
 
-    ctx = build_utci_run_context(inputs=inputs, create_dirs=True, write_metadata=True)
+    ctx = build_utci_run_context(
+        inputs=inputs, create_dirs=True, write_metadata=True, skip_if_complete=options.skip_if_complete
+    )
     config = ctx["config"]
     layout = ctx["layout"]
     metadata = ctx["metadata"]
@@ -202,12 +209,36 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         pop_valid &= wp_arr != float(wp_nodata)
     pop_valid &= wp_arr >= 0
     _append_artifact(metadata, "worldpop_raster", options.worldpop_path, "WorldPop reference grid")
+    # DOC-006/PROD-003: checksum WorldPop/admin inputs for reproducibility
+    # provenance, matching cyclone/earthquake's existing "inputs" shape.
+    # cache_dir avoids re-hashing the ~988MB admin file on every run in a batch.
+    checksum_cache_dir = shared_cache_root(config.output_root, "checksums")
+    metadata["inputs"] = {
+        "worldpop": {
+            "path": str(Path(options.worldpop_path).resolve()),
+            "sha256": checksum_path(options.worldpop_path, cache_dir=checksum_cache_dir),
+        },
+        "admin": {
+            "path": str(Path(options.admin_path).resolve()),
+            "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
+        },
+    }
 
     # Preflight.
     sample_year = int(pd.to_datetime(config.window_start.isoformat()).year)
     sample_month = int(pd.to_datetime(config.window_start.isoformat()).month)
     wp_cov = check_worldpop_coverage((west, south, east, north), options.worldpop_path)
-    sample_zip = layout["logs"] / "preflight" / f"{iso3}_utci_sample_{sample_year}{sample_month:02d}.zip"
+    # PERF-002: shared with batch/preflight.py's own CDS sample cache, keyed
+    # by (iso3, dataset, year, month, cds-bounds hash) so a batch preflight
+    # run whose fixed sample month coincides with this run's own first
+    # window month is reused instead of re-fetched -- the bounds hash keeps
+    # this safe even if preflight's admin path/buffer ever diverges from
+    # this run's, since a mismatched geography just misses the cache rather
+    # than silently returning a sample for the wrong bounding box.
+    sample_zip = (
+        shared_cache_root(config.output_root, "cds_preflight_samples")
+        / f"{iso3}_utci_{sample_year}{sample_month:02d}_{bounds_hash[:12]}.zip"
+    )
     sample_zip.parent.mkdir(parents=True, exist_ok=True)
     sample = run_cds_single_month_check(
         dataset="derived-utci-historical",
@@ -229,122 +260,68 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
             "full_coverage": bool(utci_cov["full_coverage"]),
         },
     }
-    if options.require_full_preflight_coverage and not bool(utci_cov["full_coverage"]):
-        _sync()
-        raise RuntimeError(f"UTCI preflight coverage not full ({utci_cov['coverage_pct']:.3f}%).")
+    if options.require_full_preflight_coverage:
+        sample_gate = evaluate_coverage_gate(
+            utci_cov["coverage_pct"], target_pct=100.0, hard_min_pct=options.preflight_coverage_hard_min_pct
+        )
+        if sample_gate == "warn":
+            warn_msg = (
+                "UTCI preflight coverage below target (100%); continuing because it meets the hard minimum. "
+                f"Observed={utci_cov['coverage_pct']:.3f}% HardMin={options.preflight_coverage_hard_min_pct:.3f}%"
+            )
+            warnings.warn(warn_msg, RuntimeWarning, stacklevel=2)
+            metadata.setdefault("warnings", [])
+            metadata["warnings"].append({"stage": "preflight_coverage", "message": warn_msg})
+        elif sample_gate == "fail":
+            _sync()
+            raise RuntimeError(f"UTCI preflight coverage not full ({utci_cov['coverage_pct']:.3f}%).")
 
     # Download recent months with consolidated->intermediate fallback.
     dl_status = layout["logs"] / "utci_recent_download_status.json"
-    dl_started = time.perf_counter()
     months = months_for_last_n(config.as_of_date, n_months=config.lookback_months)
     manifest: list[dict[str, Any]] = []
-
-    def _dl_write(processed: int, total: int, ok: int, failed: int, current: str | None = None) -> None:
-        elapsed = max(0.0, time.perf_counter() - dl_started)
-        rate = processed / elapsed if elapsed > 0 else 0.0
-        rem = max(0, total - processed)
-        eta = rem / rate if rate > 0 else None
-        _write_json(
-            dl_status,
-            {
-                "stage": "utci_recent_download",
-                "processed": int(processed),
-                "total": int(total),
-                "ok": int(ok),
-                "failed": int(failed),
-                "pct_complete": float((processed / total) * 100.0) if total else 100.0,
-                "elapsed_seconds": float(round(elapsed, 2)),
-                "rate_items_per_second": float(round(rate, 4)),
-                "eta_seconds": None if eta is None else float(round(eta, 2)),
-                "current": current,
-            },
-        )
+    download_writer = make_progress_writer(dl_status, "utci_recent_download", len(months))
 
     cache_dir = Path(config.output_root).resolve() / "_cache" / "heat" / iso3 / "cds_raw"
     extract_dir = cache_dir / "extracted"
     cache_dir.mkdir(parents=True, exist_ok=True)
     extract_dir.mkdir(parents=True, exist_ok=True)
-    _dl_write(0, len(months), 0, 0, None)
+    download_writer(0, ok=0, failed=0, current=None)
     n_ok = 0
     n_fail = 0
 
+    def _utci_cds_request(year: int, month: int, tier: str) -> dict[str, Any]:
+        days = [f"{d:02d}" for d in range(1, calendar.monthrange(year, month)[1] + 1)]
+        return {
+            "variable": ["universal_thermal_climate_index_daily_statistics"],
+            "version": "1_1",
+            "product_type": tier,
+            "year": [str(year)],
+            "month": [f"{month:02d}"],
+            "day": days,
+            "area": cds_bbox,
+        }
+
     for idx, (y, m) in enumerate(months, start=1):
-        days = [f"{d:02d}" for d in range(1, calendar.monthrange(y, m)[1] + 1)]
-        month_ok = False
         base = f"{iso3}_utci_{bounds_hash}_{y}{m:02d}"
         cons_zip = cache_dir / f"{base}_consolidated_dataset.zip"
-        if cons_zip.exists() and cons_zip.stat().st_size > 0:
-            manifest.append(
-                {
-                    "year": y,
-                    "month": f"{m:02d}",
-                    "product_type": "consolidated_dataset",
-                    "ok": True,
-                    "error": None,
-                    "path": str(cons_zip),
-                    "cached": True,
-                }
-            )
-            month_ok = True
-        else:
-            req = {
-                "variable": ["universal_thermal_climate_index_daily_statistics"],
-                "version": "1_1",
-                "product_type": "consolidated_dataset",
-                "year": [str(y)],
-                "month": [f"{m:02d}"],
-                "day": days,
-                "area": cds_bbox,
-            }
-            ok, err = download_cds("derived-utci-historical", req, cons_zip)
-            manifest.append(
-                {
-                    "year": y,
-                    "month": f"{m:02d}",
-                    "product_type": "consolidated_dataset",
-                    "ok": bool(ok),
-                    "error": err,
-                    "path": str(cons_zip),
-                    "cached": False,
-                }
-            )
-            if ok:
-                month_ok = True
-            else:
-                int_zip = cache_dir / f"{base}_intermediate_dataset.zip"
-                if int_zip.exists() and int_zip.stat().st_size > 0:
-                    manifest.append(
-                        {
-                            "year": y,
-                            "month": f"{m:02d}",
-                            "product_type": "intermediate_dataset",
-                            "ok": True,
-                            "error": None,
-                            "path": str(int_zip),
-                            "cached": True,
-                        }
-                    )
-                    month_ok = True
-                else:
-                    req["product_type"] = "intermediate_dataset"
-                    ok2, err2 = download_cds("derived-utci-historical", req, int_zip)
-                    manifest.append(
-                        {
-                            "year": y,
-                            "month": f"{m:02d}",
-                            "product_type": "intermediate_dataset",
-                            "ok": bool(ok2),
-                            "error": err2,
-                            "path": str(int_zip),
-                            "cached": False,
-                        }
-                    )
-                    month_ok = bool(ok2)
+        int_zip = cache_dir / f"{base}_intermediate_dataset.zip"
+        month_ok, month_rows = download_month_with_fallback(
+            "derived-utci-historical",
+            _utci_cds_request,
+            cons_zip,
+            int_zip,
+            "product_type",
+            y,
+            m,
+        )
+        manifest.extend(month_rows)
+
         if month_ok:
             n_ok += 1
         else:
             n_fail += 1
-        _dl_write(idx, len(months), n_ok, n_fail, f"{y}-{m:02d}")
+        download_writer(idx, ok=n_ok, failed=n_fail, current=f"{y}-{m:02d}")
 
     mpath = ensure_downloads(manifest=manifest, kind="utci_recent", logs_dir=layout["logs"])
     _append_artifact(metadata, "cds_manifest_utci_recent", mpath, f"{len(manifest)} UTCI requests")
@@ -426,30 +403,15 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         d.mkdir(parents=True, exist_ok=True)
 
     raster_status = layout["logs"] / "utci_raster_compute_status.json"
-    r_started = time.perf_counter()
-
-    def _rwrite(processed: int, total: int, current: str | None = None) -> None:
-        elapsed = max(0.0, time.perf_counter() - r_started)
-        rate = processed / elapsed if elapsed > 0 else 0.0
-        rem = max(0, total - processed)
-        eta = rem / rate if rate > 0 else None
-        _write_json(
-            raster_status,
-            {
-                "stage": "utci_raster_compute",
-                "processed": int(processed),
-                "total": int(total),
-                "pct_complete": float((processed / total) * 100.0) if total else 100.0,
-                "elapsed_seconds": float(round(elapsed, 2)),
-                "rate_items_per_second": float(round(rate, 4)),
-                "eta_seconds": None if eta is None else float(round(eta, 2)),
-                "current": current,
-            },
-        )
-
-    _rwrite(0, len(thresholds), None)
+    raster_writer = make_progress_writer(raster_status, "utci_raster_compute", len(thresholds))
+    raster_writer(0, current=None)
 
     results_summary: dict[str, Any] = {}
+    # PERF-005: kept alongside (not inside) results_summary, which is embedded
+    # verbatim into metadata and JSON-serialized -- lets the aggregation loop
+    # below reuse what was just computed instead of rereading each
+    # pop_affected GeoTIFF straight back off disk.
+    pop_affected_arrays: dict[str, np.ndarray] = {}
     for i, (thr_name, thr_val) in enumerate(thresholds.items(), start=1):
         exceed = (utci > float(thr_val)).fillna(False)
         consec_mask = _consecutive_k_exceedance(exceed, k=k)
@@ -499,7 +461,8 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
             "pop_affected_path": str(pop_tif),
             "pop_affected": float(np.nansum(pop_exp)),
         }
-        _rwrite(i, len(thresholds), thr_name)
+        pop_affected_arrays[thr_name] = pop_exp
+        raster_writer(i, current=thr_name)
 
     # Admin aggregation.
     source_pcode_col = resolve_admin_pcode_column(admin_gdf.columns, adm_level)
@@ -524,14 +487,8 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     )
     out["pop_total"] = pop_total_by_id
     for thr_name in thresholds.keys():
-        pop_path = pop_exposed_dir / f"pop_affected_{thr_name}.tif"
-        with rasterio.open(pop_path) as src:
-            arr = src.read(1).astype("float64")
-            nod = src.nodata
-        ok = np.isfinite(arr)
-        if nod is not None:
-            ok &= arr != float(nod)
-        ok &= arr >= 0
+        arr = pop_affected_arrays[thr_name]
+        ok = np.isfinite(arr) & (arr >= 0)
         pop_by_id = labelled_sum(
             admin_id,
             arr,
@@ -554,11 +511,21 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     out_csv = layout["tables"] / f"{iso3}_{admin_label}_extreme_heat_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     _append_artifact(metadata, "admin_heat_table", out_csv, f"{admin_label.title()} UTCI exposure table")
-    _append_artifact(
-        metadata, f"{admin_label}_heat_table", out_csv, f"{admin_label.title()} UTCI exposure table"
+
+    map_paths = write_run_maps(
+        admin_gdf,
+        out,
+        Path(results_summary[default_threshold_key]["mask_worldpop_path"]),
+        layout["maps"],
+        iso3=iso3,
+        pcode_column=pcode_label,
+        admin_level=adm_level,
+        default_threshold_label=default_threshold_key,
+        window_start=config.window_start.isoformat(),
+        window_end=config.window_end.isoformat(),
     )
-    if adm_level == 2:
-        _append_artifact(metadata, "admin2_heat_table", out_csv, "Admin2 UTCI exposure table")
+    for kind, path in map_paths.items():
+        _append_artifact(metadata, kind, path, f"{admin_label.title()} extreme heat indicator map")
 
     # Minimal QC JSON for parity.
     qc_json = (
@@ -578,9 +545,6 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     }
     _write_json(qc_json, qc_payload)
     _append_artifact(metadata, "qc_admin_table_json", qc_json, "UTCI QC summary JSON")
-    _append_artifact(metadata, f"qc_{admin_label}_table_json", qc_json, "UTCI QC summary JSON")
-    if adm_level == 2:
-        _append_artifact(metadata, "qc_admin2_table_json", qc_json, "UTCI QC summary JSON")
 
     metadata["pipeline"] = "extreme_heat_utci"
     metadata["aoi"] = {
@@ -605,19 +569,18 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         "thresholds": thresholds,
         "k_consecutive_days": int(k),
     }
-    metadata[f"{admin_label}_table"] = dict(metadata["admin_table"])
-    if adm_level == 2:
-        metadata["admin2_table"] = dict(metadata["admin_table"])
     metadata["qc_report"] = {"path": str(qc_json)}
+    # PROD-001: terminal marker so a *future* run can tell this one genuinely
+    # finished (vs. the run_metadata.json build_hazard_run_context already
+    # wrote at the very start of this run, before any real computation).
+    metadata["status"] = "SUCCESS"
     _sync()
 
     outputs = {
         "admin_table": str(out_csv),
-        f"{admin_label}_table": str(out_csv),
         "qc_json": str(qc_json),
+        **{kind: str(path) for kind, path in map_paths.items()},
     }
-    if adm_level == 2:
-        outputs["admin2_table"] = str(out_csv)
 
     return {
         "status": "SUCCESS",

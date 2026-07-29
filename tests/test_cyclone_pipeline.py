@@ -4,10 +4,10 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
-import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
+from conftest import make_worldpop_tif
 from wia_pipelines.hazards.cyclone.pipeline import RunInputs, run_pipeline
 
 
@@ -30,19 +30,13 @@ def _inputs(tmp_path: Path, *, complete=True, admin_level=2) -> RunInputs:
     admin_path = tmp_path / "admin.gpkg"
     admin.to_file(admin_path, driver="GPKG")
 
-    population_path = tmp_path / "population.tif"
-    profile = {
-        "driver": "GTiff",
-        "height": 10,
-        "width": 20,
-        "count": 1,
-        "dtype": "float32",
-        "crs": "EPSG:4326",
-        "transform": from_origin(-1, 1, 0.1, 0.1),
-        "nodata": -9999,
-    }
-    with rasterio.open(population_path, "w", **profile) as destination:
-        destination.write(np.ones((10, 20), dtype="float32"), 1)
+    population_path = make_worldpop_tif(
+        tmp_path / "population.tif",
+        shape=(10, 20),
+        value=1.0,
+        nodata=-9999,
+        transform=from_origin(-1, 1, 0.1, 0.1),
+    )
 
     rows = []
     for time, lon in (("2026-01-01 00:00:00", -0.55), ("2026-01-01 06:00:00", -0.45)):
@@ -104,8 +98,8 @@ def test_pipeline_preserves_population_and_writes_auditable_outputs(tmp_path):
         "pct_affected",
     }.issubset(table.columns)
     assert (output / "rasters" / "HI06_TST_mask_2026-06-30.tif").exists()
-    assert (output / "qc" / "HI06_TST_tracks_affected_population_2026-06-30.png").stat().st_size > 0
-    assert (output / "qc" / "HI06_TST_pct_affected_admin2_2026-06-30.png").stat().st_size > 0
+    assert (output / "maps" / "HI06_TST_tracks_affected_population_2026-06-30.png").stat().st_size > 0
+    assert (output / "maps" / "HI06_TST_pct_affected_admin2_2026-06-30.png").stat().st_size > 0
     assert (output / "run_metadata.json").exists()
     assert (output / "logs" / "HI06_TST.source.md").exists()
 
@@ -146,4 +140,159 @@ def test_pipeline_uses_configured_admin_level_in_results_and_map_name(tmp_path):
     table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
     assert {"adm2_pcode", "adm3_pcode", "adm3_name_en", "adm3_name_local"}.issubset(table.columns)
     assert "adm2_name_en" not in table.columns
-    assert (output / "qc" / "HI06_TST_pct_affected_admin3_2026-06-30.png").exists()
+    assert (output / "maps" / "HI06_TST_pct_affected_admin3_2026-06-30.png").exists()
+
+
+def test_pipeline_runs_end_to_end_at_admin1(tmp_path):
+    # `_load_admin` requires the configured level's pcode column to be
+    # present AND unique per row (it does not dissolve finer-resolution
+    # features up to a coarser level) -- so an admin1 run needs an admin
+    # file whose rows are themselves admin1 units, not `_inputs`'s admin2
+    # fixture with a repeated ADM1_PCODE. This is the first test in the
+    # suite to exercise target_adm_level=1 end-to-end for any hazard.
+    admin = gpd.GeoDataFrame(
+        {
+            "ISO3": ["TST", "TST"],
+            "ADM0_PCODE": ["TST", "TST"],
+            "ADM1_PCODE": ["TST1", "TST2"],
+            "ADM1_EN": ["West province", "East province"],
+            "ADM1_REF": ["West province", "East province"],
+        },
+        geometry=[box(-1, 0, 0, 1), box(0, 0, 1, 1)],
+        crs=4326,
+    )
+    admin_path = tmp_path / "admin1.gpkg"
+    admin.to_file(admin_path, driver="GPKG")
+
+    population_path = make_worldpop_tif(
+        tmp_path / "population.tif",
+        shape=(10, 20),
+        value=1.0,
+        nodata=-9999,
+        transform=from_origin(-1, 1, 0.1, 0.1),
+    )
+    rows = []
+    for time, lon in (("2026-01-01 00:00:00", -0.55), ("2026-01-01 06:00:00", -0.45)):
+        row = {
+            "SID": "2026001N00000",
+            "ISO_TIME": time,
+            "LAT": 0.5,
+            "LON": lon,
+            "NAME": "TEST",
+            "BASIN": "NA",
+            "USA_WIND": 40,
+        }
+        for quadrant in ("NE", "SE", "SW", "NW"):
+            row[f"USA_R34_{quadrant}"] = 20
+        rows.append(row)
+    tracks_path = tmp_path / "ibtracs.csv"
+    pd.DataFrame(rows).to_csv(tracks_path, index=False)
+    config_path = tmp_path / "admin1.yml"
+    config_path.write_text(
+        "admin:\n  level: 1\n  fields:\n    adm1_name_en: ADM1_EN\n    adm1_name_local: ADM1_REF\n",
+        encoding="utf-8",
+    )
+
+    output = run_pipeline(
+        RunInputs(
+            iso3="TST",
+            window_end="2026-06-30",
+            ibtracs=tracks_path,
+            worldpop=population_path,
+            admin=admin_path,
+            out=tmp_path / "outputs",
+            config=config_path,
+        )
+    )
+    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    assert set(table["adm1_pcode"]) == {"TST1", "TST2"}
+    assert len(table) == 2
+    west = table.loc[table["adm1_pcode"] == "TST1"].iloc[0]
+    east = table.loc[table["adm1_pcode"] == "TST2"].iloc[0]
+    assert west["pct_affected"] == pytest.approx(40.0)
+    assert east["pct_affected"] == pytest.approx(0.0)
+    assert (output / "maps" / "HI06_TST_pct_affected_admin1_2026-06-30.png").exists()
+
+
+def test_denominator_mismatch_raises_when_admin_coverage_is_incomplete(tmp_path):
+    # Regression guard for the population-conservation safety net (the same
+    # class of bug fixed for VCT/GRD admin1 runs): shrink the admin
+    # boundaries to cover only the western half of the WorldPop raster,
+    # leaving ~50% of pixels unassigned -- well outside the default 2%
+    # max_unassigned_fraction tolerance -- and confirm this actually raises
+    # rather than silently under-counting population.
+    inputs = _inputs(tmp_path)
+    partial_admin = gpd.GeoDataFrame(
+        {
+            "ISO3": ["TST"],
+            "ADM0_PCODE": ["TST"],
+            "ADM1_PCODE": ["TST1"],
+            "ADM2_PCODE": ["TST101"],
+            "ADM2_EN": ["West"],
+            "ADM2_REF": ["West"],
+        },
+        geometry=[box(-1, 0, 0, 1)],
+        crs=4326,
+    )
+    partial_admin.to_file(inputs.admin, driver="GPKG")
+    with pytest.raises(RuntimeError, match="denominator mismatch"):
+        run_pipeline(inputs)
+
+
+def test_overlapping_storm_footprints_do_not_double_count_population(tmp_path):
+    # Two separate storms (different SIDs) with IDENTICAL 34-knot swaths
+    # covering the same admin unit. A single storm at this track affects
+    # 40 of 100 people in TST101 (see the single-storm baseline test above).
+    # If the multi-storm union logic summed each storm's contribution
+    # instead of unioning footprints before masking, two identical storms
+    # would double-count to 80/100 -- the result must stay at 40/100.
+    inputs = _inputs(tmp_path)
+    rows = []
+    for sid in ("2026001N00000", "2026002N00000"):
+        for time, lon in (("2026-01-01 00:00:00", -0.55), ("2026-01-01 06:00:00", -0.45)):
+            row = {
+                "SID": sid,
+                "ISO_TIME": time,
+                "LAT": 0.5,
+                "LON": lon,
+                "NAME": "TEST",
+                "BASIN": "NA",
+                "USA_WIND": 40,
+            }
+            for quadrant in ("NE", "SE", "SW", "NW"):
+                row[f"USA_R34_{quadrant}"] = 20
+            rows.append(row)
+    pd.DataFrame(rows).to_csv(inputs.ibtracs, index=False)
+
+    output = run_pipeline(inputs)
+    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    storms = pd.read_csv(output / "qc" / "HI06_TST_storms_2026-06-30.csv")
+
+    assert len(storms) == 2
+    west_row = table.loc[table["adm2_pcode"] == "TST101"].iloc[0]
+    assert west_row["pct_affected"] == pytest.approx(40.0)
+    assert west_row["population_affected"] == pytest.approx(40.0)
+
+
+def test_pipeline_is_deterministic_across_repeated_runs(tmp_path):
+    # Same inputs, run twice into separate output directories -- the
+    # resulting admin summary tables must be numerically identical.
+    first_dir = tmp_path / "run1"
+    second_dir = tmp_path / "run2"
+    first_dir.mkdir()
+    second_dir.mkdir()
+
+    base_inputs = _inputs(tmp_path)
+    first_inputs = RunInputs(**{**base_inputs.__dict__, "out": first_dir})
+    second_inputs = RunInputs(**{**base_inputs.__dict__, "out": second_dir})
+
+    first_output = run_pipeline(first_inputs)
+    second_output = run_pipeline(second_inputs)
+
+    first_table = pd.read_csv(first_output / "tables" / "HI06_TST_2026-06-30.csv")
+    second_table = pd.read_csv(second_output / "tables" / "HI06_TST_2026-06-30.csv")
+
+    pd.testing.assert_frame_equal(
+        first_table.sort_values("adm2_pcode").reset_index(drop=True),
+        second_table.sort_values("adm2_pcode").reset_index(drop=True),
+    )

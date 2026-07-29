@@ -10,10 +10,16 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def build_run_layout(output_root: Path, hazard: str, iso3: str, run_id: str) -> dict[str, Path]:
+def build_run_layout(output_root: Path, iso3: str, window_label: str, hazard: str) -> dict[str, Path]:
+    """Canonical on-disk layout: outputs/<ISO3>/<WINDOW>/<hazard>/...
+
+    This is the single source of truth for run directory shape; callers
+    working from a RunConfig should go through config.build_run_paths
+    instead of calling this directly.
+    """
     hazard_norm = hazard.strip().lower()
     iso3_norm = iso3.strip().upper()
-    base = Path(output_root) / hazard_norm / iso3_norm / run_id
+    base = Path(output_root) / iso3_norm / window_label / hazard_norm
     return {
         "base": base,
         "raw": base / "raw",
@@ -22,7 +28,8 @@ def build_run_layout(output_root: Path, hazard: str, iso3: str, run_id: str) -> 
         "tables": base / "tables",
         "qc": base / "qc",
         "logs": base / "logs",
-        "cache": Path(output_root) / "_cache" / hazard_norm / iso3_norm,
+        "maps": base / "maps",
+        "cache": Path(output_root) / "_cache" / iso3_norm / hazard_norm,
     }
 
 

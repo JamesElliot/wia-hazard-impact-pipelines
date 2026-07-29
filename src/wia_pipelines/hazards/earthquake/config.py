@@ -1,23 +1,14 @@
 from __future__ import annotations
 
-import copy
-import hashlib
-import json
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
+from .._yaml_config import config_hash, merge_config
 
-def _merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    result = copy.deepcopy(dict(base))
-    for key, value in override.items():
-        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
-            result[key] = _merge(result[key], value)
-        else:
-            result[key] = copy.deepcopy(value)
-    return result
+__all__ = ["config_hash", "load_config", "validate_config"]
 
 
 def load_config(override_path: Path | None = None) -> dict[str, Any]:
@@ -26,7 +17,7 @@ def load_config(override_path: Path | None = None) -> dict[str, Any]:
         config = yaml.safe_load(stream)
     if override_path:
         with Path(override_path).open(encoding="utf-8") as stream:
-            config = _merge(config, yaml.safe_load(stream) or {})
+            config = merge_config(config, yaml.safe_load(stream) or {})
     validate_config(config)
     return config
 
@@ -49,8 +40,3 @@ def validate_config(config: Mapping[str, Any]) -> None:
     level = int(config["admin"]["level"])
     if not config["admin"]["fields"].get(f"adm{level}_pcode"):
         raise ValueError(f"admin.fields.adm{level}_pcode is required")
-
-
-def config_hash(config: Mapping[str, Any]) -> str:
-    payload = json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode()).hexdigest()

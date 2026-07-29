@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -43,6 +44,15 @@ HAZARD_METHODS: dict[str, HazardMethod] = {
         method_version="0.1.0",
         population_rule="WorldPop cells with flooded-day count above the reporting threshold",
     ),
+    "hydrodrought": HazardMethod(
+        hazard="hydrodrought",
+        pipeline="hydro_drought_glofas_sri",
+        method_version="0.1.0",
+        population_rule=(
+            "WorldPop cells within a river-corridor buffer of a GloFAS reach with SRI3 at or below "
+            "the reporting threshold for at least 2 consecutive months in the window"
+        ),
+    ),
     "heat": HazardMethod(
         hazard="heat",
         pipeline="extreme_heat_utci",
@@ -65,17 +75,67 @@ def hazard_method(hazard: str) -> HazardMethod:
         raise ValueError(f"No method definition registered for hazard '{hazard}'.") from exc
 
 
+class RunAlreadyCompleteError(RuntimeError):
+    """Raised by build_hazard_run_context when skip_if_complete finds a valid prior SUCCESS run.
+
+    Carries the existing run's metadata/layout so a caller (typically the CLI) can report on the
+    already-complete run without needing to re-derive its paths.
+    """
+
+    def __init__(self, metadata: dict[str, Any], layout: dict[str, Path]) -> None:
+        super().__init__(f"Run already completed successfully: {layout['base']}")
+        self.metadata = metadata
+        self.layout = layout
+
+
+def run_already_complete(layout: dict[str, Path]) -> dict[str, Any] | None:
+    """Return the existing run_metadata.json contents if it records a genuinely completed run.
+
+    PROD-001: a run is only trusted as "complete" if its own metadata carries an explicit
+    `"status": "SUCCESS"` marker written at that hazard's true end-of-run point -- every hazard
+    pipeline calls `build_hazard_run_context(..., write_metadata=True)` at the very *start* of the
+    run too, so a bare "run_metadata.json exists and is schema-valid" check alone would incorrectly
+    treat a crashed/partial run as done. Returns None (not complete/trustable) on any missing file,
+    parse error, or schema-validation failure, so a corrupted or in-progress run is always
+    conservatively re-run rather than skipped.
+    """
+
+    metadata_path = layout["base"] / "run_metadata.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        validate_run_metadata(payload)
+    except Exception:
+        return None
+    if payload.get("status") != "SUCCESS":
+        return None
+    return payload
+
+
 def build_hazard_run_context(
     config: RunConfig,
     *,
     create_dirs: bool = True,
     write_metadata: bool = True,
     metadata_updates: Mapping[str, Any] | None = None,
+    skip_if_complete: bool = False,
 ) -> dict[str, Any]:
-    """Create the canonical layout and initial metadata used by every hazard."""
+    """Create the canonical layout and initial metadata used by every hazard.
+
+    `skip_if_complete` is opt-in (default False, matching every existing caller's current
+    behavior exactly): when True, and a prior run in this same target directory already recorded
+    `"status": "SUCCESS"`, raises `RunAlreadyCompleteError` instead of proceeding -- see
+    `run_already_complete()`. This is checked before any directory creation or metadata write, so
+    it never touches a completed run's files.
+    """
 
     method = hazard_method(config.hazard)
     layout = build_run_paths(config)
+    if skip_if_complete:
+        existing = run_already_complete(layout)
+        if existing is not None:
+            raise RunAlreadyCompleteError(existing, layout)
     if create_dirs:
         create_run_dirs(layout)
 

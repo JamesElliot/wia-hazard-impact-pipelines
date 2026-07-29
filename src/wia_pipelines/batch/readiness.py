@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import geopandas as gpd
 import pandas as pd
+
+from ..core.admin import load_admin_layer
 
 
 @dataclass
@@ -142,15 +143,6 @@ def ensure_country_acled_file(
     return target
 
 
-def _read_admin_layer(admin_path: Path, layer: str) -> gpd.GeoDataFrame:
-    if str(admin_path).lower().endswith(".zip"):
-        return gpd.read_file(f"zip://{admin_path.resolve()}", layer=layer)
-    try:
-        return gpd.read_file(admin_path, layer=layer)
-    except Exception:
-        return gpd.read_file(admin_path)
-
-
 def build_admin_layer_summary(
     admin_path: Path,
     target_adm_levels: set[int],
@@ -160,7 +152,7 @@ def build_admin_layer_summary(
     for lvl in sorted(target_adm_levels):
         layer = f"admin{lvl}"
         try:
-            gdf = _read_admin_layer(admin_path, layer=layer)
+            gdf = load_admin_layer(admin_path, layer=layer)
         except Exception:
             summaries[lvl] = AdminLayerSummary(
                 exists=False,

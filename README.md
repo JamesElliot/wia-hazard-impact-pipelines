@@ -16,6 +16,7 @@ are examples and quality-control aids.
 | Flood | Copernicus Global Flood Monitoring via EODC STAC | Population in pixels with more than the configured number of flooded days |
 | Extreme heat | Copernicus historical UTCI via CDS | Population in pixels exceeding a UTCI threshold for the configured consecutive-day period |
 | Drought | Copernicus SPEI3 via CDS | Population in pixels at or below a configured SPEI threshold in any month of the window |
+| Hydrological drought | Copernicus GloFAS historical (EWDS) + HydroRIVERS | Population within a river-corridor buffer of a GloFAS reach with SRI3 at or below the reporting threshold, persisting at least 2 consecutive months |
 | Earthquake | USGS catalogue and ShakeMap | Population in pixels whose maximum shaking reaches MMI VI during the window |
 | Tropical cyclone | NOAA IBTrACS, with optional GDACS fallback | Population in observed 34-knot wind-radius swaths during the analysis window |
 | Violence | User-supplied licensed ACLED export | Population in buffered event footprints meeting the event-count threshold |
@@ -47,15 +48,21 @@ python -m pip install -e . --no-build-isolation
 ```
 
 CDS-backed workflows also require locally configured CDS API credentials.
-Violence workflows require an ACLED export obtained under the user's own
-licence. No raw source datasets are distributed with this repository.
+The hydrological drought workflow additionally requires Early Warning Data
+Store (EWDS) credentials in `~/.ewdsapirc` (same `url:`/`key:` format as
+`~/.cdsapirc`, but a separate account/endpoint) and the HydroRIVERS dataset
+under `data/HydroRIVERS_v10/`. Violence workflows require an ACLED export
+obtained under the user's own licence. No raw source datasets are
+distributed with this repository.
 
 ## Run a pipeline
 
 ```bash
 wia-hazards run-spei --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-hydrodrought --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-utci --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-flood --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-flood-bulk --iso3 SSD --start-year 2021 --end-year 2025
 wia-hazards run-violence --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-earthquake --iso3 MMR --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-cyclone --iso3 MOZ --as-of-date 2026-03-31 --lookback-months 12
@@ -72,6 +79,21 @@ when a revised upstream catalogue or event product must be retrieved. Use
 `wia-hazards --help` and command-specific help for optional thresholds and
 overrides. See [`docs/data-sources.md`](docs/data-sources.md) before running
 against real data.
+
+`run-flood-bulk` applies the standard flood method independently to each complete
+calendar year in an inclusive range. It resumes complete years by default and
+writes an incremental CSV under `outputs/batch/flood/`, making multi-year GFM
+downloads safe to restart. The default arguments target South Sudan for
+2021–2025; pass `--no-resume` only when annual outputs should be rebuilt.
+
+After annual flood masks exist, build a per-pixel recurrence raster and map with:
+
+```bash
+python scripts/build_flood_recurrence.py --iso3 SSD --start-year 2021 --end-year 2025
+```
+
+The output value is the number of annual windows in which the pixel flooded at
+least once. Pixels outside the country are stored as nodata rather than zero.
 
 ## Outputs and Earth Engine handoff
 

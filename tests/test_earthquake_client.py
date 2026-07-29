@@ -1,4 +1,7 @@
+import urllib.error
+
 import numpy as np
+import pytest
 import wia_pipelines.hazards.earthquake.client as client
 
 from wia_pipelines.hazards.earthquake.client import (
@@ -79,3 +82,45 @@ def test_download_cache_reuses_asset_and_refreshes_on_request(tmp_path, monkeypa
     assert refreshed["source"] == "download"
     assert len(calls) == 2
     assert path.read_bytes() == b"payload-2"
+
+
+def test_download_cached_propagates_timeout_and_leaves_no_partial_file(tmp_path, monkeypatch):
+    def timeout_fetch(url, timeout_seconds=120):
+        raise TimeoutError("simulated network timeout")
+
+    monkeypatch.setattr(client, "fetch_bytes", timeout_fetch)
+    path = tmp_path / "asset.bin"
+    with pytest.raises(TimeoutError, match="simulated network timeout"):
+        client.download_cached("https://example.test/asset", path)
+    assert not path.exists()
+
+
+def test_download_cached_propagates_http_error(tmp_path, monkeypatch):
+    def failing_fetch(url, timeout_seconds=120):
+        raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
+
+    monkeypatch.setattr(client, "fetch_bytes", failing_fetch)
+    path = tmp_path / "asset.bin"
+    with pytest.raises(urllib.error.HTTPError):
+        client.download_cached("https://example.test/asset", path)
+    assert not path.exists()
+
+
+def test_download_cached_recovers_after_a_failed_attempt(tmp_path, monkeypatch):
+    # A transient failure must not leave a corrupt cache entry that a later,
+    # successful call would mistake for valid cached data.
+    attempts = {"count": 0}
+
+    def flaky_fetch(url, timeout_seconds=120):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise TimeoutError("simulated network timeout")
+        return b"real-payload"
+
+    monkeypatch.setattr(client, "fetch_bytes", flaky_fetch)
+    path = tmp_path / "asset.bin"
+    with pytest.raises(TimeoutError):
+        client.download_cached("https://example.test/asset", path)
+    result = client.download_cached("https://example.test/asset", path)
+    assert result["source"] == "download"
+    assert path.read_bytes() == b"real-payload"

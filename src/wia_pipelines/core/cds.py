@@ -31,6 +31,65 @@ def download_cds(dataset: str, request: dict[str, Any], out_zip: Path) -> tuple[
         return False, str(exc)
 
 
+def download_month_with_fallback(
+    dataset: str,
+    request_builder: Callable[[int, int, str], dict[str, Any]],
+    consolidated_zip: Path,
+    intermediate_zip: Path,
+    manifest_key: str,
+    year: int,
+    month: int,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Download one month's CDS asset, consolidated tier first, falling back
+    to the intermediate tier -- checking the on-disk cache at each tier
+    before issuing a new request.
+
+    ``request_builder(year, month, tier)`` returns the full CDS request dict
+    for that tier, where ``tier`` is ``"consolidated_dataset"`` or
+    ``"intermediate_dataset"``. ``manifest_key`` is the field name the
+    caller's manifest rows use for the tier value (hazards differ here --
+    e.g. ``"dataset_type"`` vs ``"product_type"``).
+
+    Returns ``(month_ok, manifest_rows)``.
+    """
+    manifest_rows: list[dict[str, Any]] = []
+
+    def _try_tier(tier: str, zip_path: Path) -> bool:
+        if zip_path.exists() and zip_path.stat().st_size > 0:
+            manifest_rows.append(
+                {
+                    "year": year,
+                    "month": f"{month:02d}",
+                    manifest_key: tier,
+                    "ok": True,
+                    "error": None,
+                    "path": str(zip_path),
+                    "cached": True,
+                }
+            )
+            return True
+        request = request_builder(year, month, tier)
+        ok, err = download_cds(dataset, request, zip_path)
+        manifest_rows.append(
+            {
+                "year": year,
+                "month": f"{month:02d}",
+                manifest_key: tier,
+                "ok": bool(ok),
+                "error": err,
+                "path": str(zip_path),
+                "cached": False,
+            }
+        )
+        return bool(ok)
+
+    if _try_tier("consolidated_dataset", consolidated_zip):
+        return True, manifest_rows
+    if _try_tier("intermediate_dataset", intermediate_zip):
+        return True, manifest_rows
+    return False, manifest_rows
+
+
 def extract_zip_to_dir(zip_path: Path, out_dir: Path) -> list[Path]:
     out_subdir = out_dir / zip_path.stem
     out_subdir.mkdir(parents=True, exist_ok=True)

@@ -8,15 +8,16 @@ from typing import Any
 import geopandas as gpd
 import pandas as pd
 
+from ..core.admin import admin_bounds_hash
+from ..core.assets import shared_cache_root
 from ..core.worldpop import bbox_coverage_report
+from ..hazards.coverage_aoi import prepare_country_admin_context
 from ..hazards.coverage_checks import (
     check_worldpop_coverage,
-    prepare_country_admin_context,
     run_cds_single_month_check,
     run_flood_stac_extent_check,
-    spei_sample_request,
-    utci_sample_request,
 )
+from ..hazards.coverage_requests import spei_sample_request, utci_sample_request
 
 
 def _now_utc() -> str:
@@ -118,6 +119,7 @@ def run_batch_preflight(
     out_dir: Path = Path("./outputs/batch/preflight"),
     iso3_field: str = "iso3",
     included_violence_types: list[str] | None = None,
+    output_root: Path = Path("./outputs"),
 ) -> dict[str, Any]:
     if readiness.empty:
         return {"rows": [], "summary": {}}
@@ -212,6 +214,12 @@ def run_batch_preflight(
             admin_bounds = ctx["admin_bounds_wsen"]
             country_dir = out_dir / f"task_{task_id:04d}_{iso3}"
             country_dir.mkdir(parents=True, exist_ok=True)
+            # PERF-002: same hash convention hazards/spei.py and hazards/utci.py
+            # use for their own CDS sample cache key, so a fixed preflight
+            # sample month that coincides with a country's own pipeline window
+            # start month is a genuine cache hit rather than a second fetch.
+            cds_bounds_hash = admin_bounds_hash(iso3, ctx["cds_bounds_wsen"])
+            preflight_cache_dir = shared_cache_root(output_root, "cds_preflight_samples")
         except Exception as exc:
             result["preflight_issues"] = f"admin_context_error:{exc}"
             report_rows.append(result)
@@ -235,7 +243,10 @@ def run_batch_preflight(
                     note="Running SPEI preflight check.",
                 )
                 spei_req = spei_sample_request(sample_year, sample_month, ctx["cds_area_nwse"])
-                spei_zip = country_dir / f"{iso3}_spei_{sample_year}{sample_month:02d}.zip"
+                spei_zip = (
+                    preflight_cache_dir
+                    / f"{iso3}_spei_{sample_year}{sample_month:02d}_{cds_bounds_hash[:12]}.zip"
+                )
                 spei_pre_exists = spei_zip.exists() and spei_zip.stat().st_size > 0
                 spei = run_cds_single_month_check(
                     dataset="derived-drought-historical-monthly",
@@ -270,7 +281,10 @@ def run_batch_preflight(
                     note="Running UTCI preflight check.",
                 )
                 utci_req = utci_sample_request(sample_year, sample_month, ctx["cds_area_nwse"])
-                utci_zip = country_dir / f"{iso3}_utci_{sample_year}{sample_month:02d}.zip"
+                utci_zip = (
+                    preflight_cache_dir
+                    / f"{iso3}_utci_{sample_year}{sample_month:02d}_{cds_bounds_hash[:12]}.zip"
+                )
                 utci_pre_exists = utci_zip.exists() and utci_zip.stat().st_size > 0
                 utci = run_cds_single_month_check(
                     dataset="derived-utci-historical",
