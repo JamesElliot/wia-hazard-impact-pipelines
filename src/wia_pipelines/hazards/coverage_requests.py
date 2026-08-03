@@ -16,7 +16,7 @@ def spei_sample_request(
 ) -> dict[str, Any]:
     return {
         "variable": ["standardised_precipitation_evapotranspiration_index"],
-        "accumulation_period": ["3"],
+        "accumulation_period": ["12"],
         "version": "1_0",
         "product_type": ["reanalysis"],
         "dataset_type": "consolidated_dataset",

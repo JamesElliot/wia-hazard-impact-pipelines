@@ -20,9 +20,9 @@ the provider's current licence and attribution requirements.
 
 | Input | Used by | Expected local form | Notes |
 |---|---|---|---|
-| Administrative boundaries | All hazards | GeoPackage, geodatabase, or supported archive with ISO3 and pcode fields | Record source release, admin level, and any boundary modifications. |
+| Administrative boundaries | All hazards | GeoPackage, geodatabase, or supported archive with ISO3 and pcode fields | Requires a sidecar `admin_source.json` (authority/vintage/access_date) next to the dataset — see "Administrative boundary provenance" in `docs/output-contract.md`; a run fails fast without it. Per-country COD-AB overrides live under `data/cod-ab/<override-name>/` (e.g. `data/cod-ab/mli_sdn_moz_lbn/`) and take precedence over the shared global dataset for any ISO3 listed in that directory's `admin_source.json` `"countries"` block — see `core.assets.resolve_admin_path`. |
 | WorldPop | All hazards | Country population GeoTIFF | Population is the reference grid for alignment and affected-population sums. |
-| Copernicus `derived-drought-historical-monthly` | Drought | Downloaded through `cdsapi` | The implementation selects SPEI3 and requests the configured monthly window. |
+| Copernicus `derived-drought-historical-monthly` | Drought | Downloaded through `cdsapi` | The implementation selects SPEI12 and requests the configured monthly window. |
 | Copernicus `cems-glofas-historical` (river discharge) | Hydrological drought | Downloaded through `cdsapi` pointed at the Early Warning Data Store (EWDS), a separate endpoint/credential set from the classic CDS | Daily discharge is downloaded per month and reduced to monthly means before SRI standardization; requires `~/.ewdsapirc` (see below). |
 | HydroRIVERS v1.0 | Hydrological drought | Local geodatabase (`data/HydroRIVERS_v10/`) | Defines the river-corridor buffer used to attribute GloFAS reach status to nearby population, instead of a naive raster resample. |
 | Copernicus `derived-utci-historical` | Heat | Downloaded through `cdsapi` | The implementation derives daily maximum UTCI before consecutive-day tests. |
@@ -59,7 +59,7 @@ outputs/_cache/
 │   ├── gdacs/
 │   └── usgs/
 ├── heat/
-└── water_scarcity_spei3/
+└── water_scarcity_spei12/
 ```
 
 Run directories contain hard-linked or copied references to the exact cached

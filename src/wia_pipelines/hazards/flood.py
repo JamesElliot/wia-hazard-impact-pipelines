@@ -9,6 +9,7 @@ from typing import Any
 from ..config import RunConfig
 from ..core.assets import checksum_path, shared_cache_root
 from ..core.pipeline import (
+    build_admin_source,
     build_hazard_run_context,
     record_artifact,
     standardize_admin_summary,
@@ -224,6 +225,13 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
         },
     }
+    metadata["admin_source"] = build_admin_source(
+        admin_path=options.admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_gdf),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
 
     window_start = config.window_start.isoformat()
     window_end = config.window_end.isoformat()
@@ -575,7 +583,8 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         population_affected_column="pop_affected_flood",
         pct_affected_column="pct_affected_flood",
     )
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_flood_exposure_{window_start}_{window_end}.csv"
+    vintage = metadata["admin_source"]["vintage"]
+    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_flood_exposure_{window_start}_{window_end}.csv"
     out_df.to_csv(out_csv, index=False)
     _artifact("admin_flood_table", out_csv, f"{admin_label.title()} flood exposure + severity table")
 

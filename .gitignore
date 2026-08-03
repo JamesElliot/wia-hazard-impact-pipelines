@@ -40,6 +40,12 @@ tmp/
 data/*
 !data/README.md
 !data/.gitkeep
+# ...except the hand-authored admin-boundary provenance manifest (authority/
+# vintage/access_date) -- small, not a data asset, and required for
+# admin_source.json fail-fast validation (core.assets.load_admin_source_manifest).
+!data/cod-ab/
+data/cod-ab/*
+!data/cod-ab/admin_source.json
 
 # Common geospatial and tabular data products outside data/
 *.tif

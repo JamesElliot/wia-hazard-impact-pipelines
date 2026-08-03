@@ -38,7 +38,9 @@ def _cmd_init_run(args: argparse.Namespace) -> int:
 
 def _cmd_validate_metadata(args: argparse.Namespace) -> int:
     payload = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
-    validate_run_metadata(payload, schema_path=args.schema)
+    validate_run_metadata(
+        payload, schema_path=args.schema, require_admin_source=bool(args.require_admin_source)
+    )
     print("run_metadata validation passed.")
     return 0
 
@@ -348,7 +350,7 @@ def _cmd_run_violence(args: argparse.Namespace) -> int:
 
     included = args.included_event_type if args.included_event_type else None
     worldpop_path = resolve_worldpop_path(args.iso3, args.worldpop_path, args.worldpop_dir)
-    admin_path = resolve_admin_path(args.admin_path)
+    admin_path = resolve_admin_path(args.admin_path, iso3=args.iso3)
     inputs = ViolenceRunInputs(
         iso3=args.iso3,
         as_of_date=args.as_of_date,
@@ -439,13 +441,14 @@ def _cmd_run_spei(args: argparse.Namespace) -> int:
 
     iso3 = str(args.iso3).upper()
     worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
+    admin_path = resolve_admin_path(args.admin_path, iso3=iso3)
     payload = {
         "pipeline": "spei",
         "iso3": iso3,
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
         "target_adm_level": int(args.target_adm_level),
-        "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+        "admin_path": str(admin_path),
         "admin_layer": args.admin_layer or f"admin{int(args.target_adm_level)}",
         "worldpop_path": str(worldpop_path),
         "output_root": str(Path(args.output_root).expanduser().resolve()),
@@ -468,7 +471,7 @@ def _cmd_run_spei(args: argparse.Namespace) -> int:
                     output_root=Path(args.output_root).expanduser().resolve(),
                     target_adm_level=int(args.target_adm_level),
                 ),
-                admin_path=Path(args.admin_path).expanduser().resolve(),
+                admin_path=admin_path,
                 worldpop_path=worldpop_path,
                 admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
                 iso3_field=args.iso3_field,
@@ -498,13 +501,14 @@ def _cmd_run_hydrodrought(args: argparse.Namespace) -> int:
     iso3 = str(args.iso3).upper()
     worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
     hydrorivers_path = resolve_hydrorivers_path(args.hydrorivers_path)
+    admin_path = resolve_admin_path(args.admin_path, iso3=iso3)
     payload = {
         "pipeline": "hydrodrought",
         "iso3": iso3,
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
         "target_adm_level": int(args.target_adm_level),
-        "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+        "admin_path": str(admin_path),
         "admin_layer": args.admin_layer or f"admin{int(args.target_adm_level)}",
         "worldpop_path": str(worldpop_path),
         "hydrorivers_path": str(hydrorivers_path),
@@ -534,7 +538,7 @@ def _cmd_run_hydrodrought(args: argparse.Namespace) -> int:
                     output_root=Path(args.output_root).expanduser().resolve(),
                     target_adm_level=int(args.target_adm_level),
                 ),
-                admin_path=Path(args.admin_path).expanduser().resolve(),
+                admin_path=admin_path,
                 worldpop_path=worldpop_path,
                 hydrorivers_path=hydrorivers_path,
                 admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
@@ -569,13 +573,14 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
     iso3 = str(args.iso3).upper()
     worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
     thresholds = tuple(args.abs_threshold_c) if args.abs_threshold_c else (32.0, 38.0, 46.0)
+    admin_path = resolve_admin_path(args.admin_path, iso3=iso3)
     payload = {
         "pipeline": "utci",
         "iso3": iso3,
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
         "target_adm_level": int(args.target_adm_level),
-        "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+        "admin_path": str(admin_path),
         "admin_layer": args.admin_layer or f"admin{int(args.target_adm_level)}",
         "worldpop_path": str(worldpop_path),
         "output_root": str(Path(args.output_root).expanduser().resolve()),
@@ -599,7 +604,7 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
                     output_root=Path(args.output_root).expanduser().resolve(),
                     target_adm_level=int(args.target_adm_level),
                 ),
-                admin_path=Path(args.admin_path).expanduser().resolve(),
+                admin_path=admin_path,
                 worldpop_path=worldpop_path,
                 admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
                 iso3_field=args.iso3_field,
@@ -626,13 +631,14 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
 
     iso3 = str(args.iso3).upper()
     worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
+    admin_path = resolve_admin_path(args.admin_path, iso3=iso3)
     payload = {
         "pipeline": "flood",
         "iso3": iso3,
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
         "target_adm_level": int(args.target_adm_level),
-        "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+        "admin_path": str(admin_path),
         "admin_layer": args.admin_layer or f"admin{int(args.target_adm_level)}",
         "worldpop_path": str(worldpop_path),
         "output_root": str(Path(args.output_root).expanduser().resolve()),
@@ -662,7 +668,7 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
                     output_root=Path(args.output_root).expanduser().resolve(),
                     target_adm_level=int(args.target_adm_level),
                 ),
-                admin_path=Path(args.admin_path).expanduser().resolve(),
+                admin_path=admin_path,
                 worldpop_path=worldpop_path,
                 admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
                 iso3_field=args.iso3_field,
@@ -698,7 +704,7 @@ def _cmd_run_flood_bulk(args: argparse.Namespace) -> int:
         start_year=int(args.start_year),
         end_year=int(args.end_year),
         output_root=Path(args.output_root),
-        admin_path=Path(args.admin_path),
+        admin_path=resolve_admin_path(args.admin_path, iso3=iso3),
         worldpop_path=resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir),
         target_adm_level=int(args.target_adm_level),
         admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
@@ -745,7 +751,7 @@ def _cmd_run_cyclone(args: argparse.Namespace) -> int:
         window_end=args.as_of_date,
         ibtracs=resolve_ibtracs_path(args.ibtracs_path, args.ibtracs_dir),
         worldpop=resolve_worldpop_path(args.iso3, args.worldpop_path, args.worldpop_dir),
-        admin=resolve_admin_path(args.admin_path),
+        admin=resolve_admin_path(args.admin_path, iso3=args.iso3),
         out=Path(args.output_root).expanduser().resolve(),
         lookback_months=int(args.lookback_months),
         target_adm_level=args.target_adm_level,
@@ -791,7 +797,7 @@ def _cmd_run_earthquake(args: argparse.Namespace) -> int:
         iso3=str(args.iso3).upper(),
         window_end=args.as_of_date,
         worldpop=resolve_worldpop_path(args.iso3, args.worldpop_path, args.worldpop_dir),
-        admin=resolve_admin_path(args.admin_path),
+        admin=resolve_admin_path(args.admin_path, iso3=args.iso3),
         out=Path(args.output_root).expanduser().resolve(),
         lookback_months=int(args.lookback_months),
         target_adm_level=args.target_adm_level,
@@ -861,7 +867,13 @@ def _add_common_hazard_paths(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument("--output-root", default="./outputs")
     parser.add_argument(
-        "--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip"
+        "--admin-path",
+        default=None,
+        help=(
+            "Admin boundary asset. Defaults to a per-country COD-AB override "
+            "registered under data/cod-ab/*/admin_source.json when one exists "
+            "for --iso3, else data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip."
+        ),
     )
     parser.add_argument("--worldpop-path", default=None)
     parser.add_argument("--worldpop-dir", default="./data/population")
@@ -908,6 +920,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument("--metadata", required=True)
     validate.add_argument("--schema", default=None)
+    validate.add_argument(
+        "--require-admin-source",
+        action="store_true",
+        help="Also require admin_source (publication-readiness gate); off by default for backward compatibility.",
+    )
     validate.set_defaults(func=_cmd_validate_metadata)
 
     audit = subparsers.add_parser(

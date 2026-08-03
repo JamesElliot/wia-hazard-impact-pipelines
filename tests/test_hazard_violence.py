@@ -135,6 +135,7 @@ class ViolenceHazardTests(unittest.TestCase):
                 metadata["inputs"]["worldpop_sha256"], hashlib.sha256(wp_path.read_bytes()).hexdigest()
             )
             self.assertEqual(metadata["inputs"]["admin_path"], str(admin_path))
+            self.assertEqual(metadata["admin_source"]["vintage"], "TEST2026-01")
 
     def _run_with_worldpop_row_count(self, n_rows: int):
         # Shrinks the WorldPop raster's vertical extent so it only partially covers

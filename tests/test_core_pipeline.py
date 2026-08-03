@@ -54,8 +54,8 @@ def test_run_context_uses_canonical_hazard_path_and_metadata(tmp_path):
 
     assert context["layout"]["base"].name == "drought"
     assert context["layout"]["base"].parent.parent.name == "MLI"
-    assert context["metadata"]["pipeline"] == "water_scarcity_spei3"
-    assert context["metadata"]["method_version"] == "0.1.0"
+    assert context["metadata"]["pipeline"] == "water_scarcity_spei12"
+    assert context["metadata"]["method_version"] == "0.2.0"
 
     artifact = context["layout"]["logs"] / "audit.txt"
     artifact.write_text("ok", encoding="utf-8")

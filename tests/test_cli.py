@@ -35,10 +35,10 @@ class SharedArgparseHelperTests(unittest.TestCase):
         _add_common_hazard_paths(parser)
         args = parser.parse_args([])
         self.assertEqual(args.output_root, "./outputs")
-        self.assertEqual(
-            args.admin_path,
-            "./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip",
-        )
+        # None by default: resolve_admin_path(admin_path=None, iso3=...) picks a
+        # per-country COD-AB override when one is registered, else falls back to
+        # the shared global admin dataset -- see core.assets.resolve_admin_path.
+        self.assertIsNone(args.admin_path)
         self.assertIsNone(args.worldpop_path)
         self.assertEqual(args.worldpop_dir, "./data/population")
 

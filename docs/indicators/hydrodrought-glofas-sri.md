@@ -6,7 +6,9 @@ The reference implementation downloads Copernicus GloFAS historical river
 discharge (`cems-glofas-historical`, variable `dis24`) through the Early
 Warning Data Store (EWDS), reduces it to monthly means, and standardizes a
 rolling 3-month accumulation (SRI3) against a fitted baseline distribution --
-the same accumulation convention this repo already uses for SPEI3 (HI-07).
+a standard drought-monitoring accumulation window per WMO-1173, independent
+of this repo's drought (SPEI12, HI-07) accumulation period; the SRI
+accumulation is exposed as its own `--accumulation-months` parameter.
 
 Default thresholds are −1.0, −1.5, and −2.0. For each threshold, a river reach
 is flagged when its SRI3 crosses the threshold in the analysis window, in two
@@ -71,8 +73,8 @@ The corridor width, reach count, and Strahler-order rule are recorded in
 
 ## Important implementation choices
 
-- SRI accumulation is monthly (SRI-3), not raw daily GloFAS values, matching
-  this repo's SPEI-3 convention and the WMO-1173 handbook's standard practice.
+- SRI accumulation is monthly (SRI-3 by default), not raw daily GloFAS
+  values, per the WMO-1173 handbook's standard practice.
 - The baseline distribution is a mixed point-mass-at-zero + gamma fit per
   grid cell, falling back to an empirical (Weibull plotting-position)
   distribution for cells with too few nonzero baseline observations
@@ -95,6 +97,6 @@ The corridor width, reach count, and Strahler-order rule are recorded in
 ## Relationship to the existing SPEI drought indicator (HI-07)
 
 This is a parallel `hydrodrought` hazard, not a replacement for the existing
-SPEI3-based `drought` (HI-07) hazard. Both can be run and compared; promoting
+SPEI12-based `drought` (HI-07) hazard. Both can be run and compared; promoting
 hydrological drought to drive HI-07 (or assigning it its own HI slot) is a
 decision for after the validation phase, not before.

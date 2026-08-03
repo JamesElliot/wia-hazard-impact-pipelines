@@ -11,6 +11,7 @@ from ..core.admin import admin_bounds_hash, filter_admin_for_iso3, load_admin_la
 from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
 from ..core.pipeline import (
+    build_admin_source,
     build_hazard_run_context,
     record_artifact,
     standardize_admin_summary,
@@ -223,6 +224,13 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
             "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
         },
     }
+    metadata["admin_source"] = build_admin_source(
+        admin_path=options.admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_gdf),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
 
     # Preflight.
     sample_year = int(pd.to_datetime(config.window_start.isoformat()).year)
@@ -508,7 +516,8 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         population_affected_column=f"pop_exposed_{default_threshold_key}",
         pct_affected_column=f"pct_exposed_{default_threshold_key}",
     )
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_extreme_heat_{config.as_of_date}.csv"
+    vintage = metadata["admin_source"]["vintage"]
+    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_extreme_heat_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     _append_artifact(metadata, "admin_heat_table", out_csv, f"{admin_label.title()} UTCI exposure table")
 

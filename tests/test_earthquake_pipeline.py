@@ -8,7 +8,7 @@ import pytest
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from conftest import make_worldpop_tif
+from conftest import make_worldpop_tif, write_admin_source_manifest
 from wia_pipelines.config import RunConfig
 from wia_pipelines.core.admin import build_admin_aoi
 from wia_pipelines.core.assets import shared_cache_root, url_cache_key
@@ -47,6 +47,7 @@ def _admin_gdf() -> gpd.GeoDataFrame:
 def _inputs(tmp_path: Path, *, worldpop_shape=(10, 20), worldpop_transform=None) -> RunInputs:
     admin_path = tmp_path / "admin.gpkg"
     _admin_gdf().to_file(admin_path, driver="GPKG")
+    write_admin_source_manifest(admin_path)
     population_path = make_worldpop_tif(
         tmp_path / "population.tif",
         shape=worldpop_shape,

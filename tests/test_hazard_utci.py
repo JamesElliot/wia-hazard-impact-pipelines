@@ -181,6 +181,7 @@ class UtciPipelineExecutionTests(unittest.TestCase):
                 hashlib.sha256(worldpop_path.read_bytes()).hexdigest(),
             )
             self.assertEqual(metadata["inputs"]["admin"]["path"], str(admin_path.resolve()))
+            self.assertEqual(metadata["admin_source"]["vintage"], "TEST2026-01")
 
     @staticmethod
     def _utci_inputs(root: Path):

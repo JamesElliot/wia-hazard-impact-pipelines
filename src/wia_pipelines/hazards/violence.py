@@ -13,8 +13,9 @@ from ..core.admin import (
     resolve_admin_pcode_column,
 )
 from ..core.aggregation import labelled_sum
-from ..core.assets import checksum_path, shared_cache_root
+from ..core.assets import checksum_path, load_admin_source_manifest, shared_cache_root
 from ..core.pipeline import (
+    build_admin_source,
     build_hazard_run_context,
     record_artifact,
     standardize_admin_summary,
@@ -156,6 +157,8 @@ def run_violence_pipeline(
     if not acled_path.exists():
         raise FileNotFoundError(f"Missing ACLED CSV: {acled_path}")
 
+    admin_source_vintage = load_admin_source_manifest(admin_path)["vintage"]
+
     selected_types = (
         list(included_event_types) if included_event_types else list(DEFAULT_INCLUDED_EVENT_TYPES)
     )
@@ -192,7 +195,7 @@ def run_violence_pipeline(
         layout["rasters"] / "violence" / f"{config.run_id}_violence_pop_weighted_event_count.tif"
     )
     footprint_gpkg = layout["intermediate"] / "violence" / f"{config.run_id}_violence_footprint.gpkg"
-    admin_stats_csv = layout["tables"] / f"{config.run_id}_{admin_label}_stats.csv"
+    admin_stats_csv = layout["tables"] / f"{config.run_id}_{admin_label}_{admin_source_vintage}_stats.csv"
     for p in [
         event_count_tif,
         mask_tif,
@@ -475,9 +478,12 @@ def run_violence_pipeline(
     _add_artifact("qc_mask", qc_mask_png, "Binary violence mask")
 
     # QC figure 3: mask on WorldPop
-    wp_plot = wp_arr.copy()
+    # No defensive copy of wp_arr here (PERF/MEM): imshow only reads its input,
+    # and a full-array copy of the whole-country WorldPop raster was enough
+    # extra peak memory to get this step OOM-killed on memory-constrained
+    # hosts for large countries (observed reproducibly for MLI at admin2).
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(wp_plot, interpolation="nearest", extent=extent, origin="upper")
+    ax.imshow(wp_arr, interpolation="nearest", extent=extent, origin="upper")
     ax.imshow(
         np.where(mask == 1, 1, np.nan), interpolation="nearest", extent=extent, origin="upper", alpha=0.35
     )
@@ -545,6 +551,13 @@ def run_violence_pipeline(
         pct_affected_column="pct_affected",
     )
     admin_df.to_csv(admin_stats_csv, index=False)
+    metadata["admin_source"] = build_admin_source(
+        admin_path=admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_df),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
     write_zon(4, ok=4, current=f"{admin_label}_table_written")
     _add_artifact("admin_stats", admin_stats_csv, f"{admin_label.title()} violence population summary")
 

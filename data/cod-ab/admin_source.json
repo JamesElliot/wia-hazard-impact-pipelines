@@ -1,0 +1,6 @@
+{
+  "authority": "COD",
+  "vintage": "COD2026-07",
+  "access_date": "2026-07-29",
+  "notes": "OCHA Common Operational Dataset - Administrative Boundaries (COD-AB), global matched archive (admin0/admin1/admin2) downloaded from data.humdata.org as global_admin_boundaries_matched_latest.gdb.zip, with per-country metadata in global_admin_boundaries_metadata_latest.csv. Used as the shared default admin source for countries without a dedicated per-country override under data/cod-ab/<override-name>/ (see data/cod-ab/mli_sdn_moz_lbn/admin_source.json), including VCT (Saint Vincent and the Grenadines, admin1 Parish x6, per-country date_metadata 2024-07-17) and GRD (Grenada, admin1 Parish x8, per-country date_metadata 2024-07-07)."
+}

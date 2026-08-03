@@ -7,7 +7,7 @@ import pytest
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from conftest import make_worldpop_tif
+from conftest import make_worldpop_tif, write_admin_source_manifest
 from wia_pipelines.hazards.cyclone.pipeline import RunInputs, run_pipeline
 
 
@@ -29,6 +29,7 @@ def _inputs(tmp_path: Path, *, complete=True, admin_level=2) -> RunInputs:
     )
     admin_path = tmp_path / "admin.gpkg"
     admin.to_file(admin_path, driver="GPKG")
+    write_admin_source_manifest(admin_path)
 
     population_path = make_worldpop_tif(
         tmp_path / "population.tif",
@@ -81,7 +82,7 @@ def _inputs(tmp_path: Path, *, complete=True, admin_level=2) -> RunInputs:
 
 def test_pipeline_preserves_population_and_writes_auditable_outputs(tmp_path):
     output = run_pipeline(_inputs(tmp_path))
-    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    table = pd.read_csv(output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
     assert table["pop_total"].sum() == 200
     assert table.loc[table["adm2_pcode"] == "TST101", "pct_affected"].iloc[0] > 0
     assert table.loc[table["adm2_pcode"] == "TST102", "pct_affected"].iloc[0] == 0
@@ -121,7 +122,7 @@ def test_no_storm_window_is_valid_zero_with_storm_audit_schema(tmp_path):
     frame["ISO_TIME"] = "2020-01-01 00:00:00"
     frame.to_csv(inputs.ibtracs, index=False)
     output = run_pipeline(inputs)
-    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    table = pd.read_csv(output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
     storms = pd.read_csv(output / "qc" / "HI06_TST_storms_2026-06-30.csv")
     assert table["pct_affected"].eq(0).all()
     assert storms.empty
@@ -137,7 +138,7 @@ def test_wrong_country_code_cannot_silently_process_all_admins(tmp_path):
 
 def test_pipeline_uses_configured_admin_level_in_results_and_map_name(tmp_path):
     output = run_pipeline(_inputs(tmp_path, admin_level=3))
-    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    table = pd.read_csv(output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
     assert {"adm2_pcode", "adm3_pcode", "adm3_name_en", "adm3_name_local"}.issubset(table.columns)
     assert "adm2_name_en" not in table.columns
     assert (output / "maps" / "HI06_TST_pct_affected_admin3_2026-06-30.png").exists()
@@ -163,6 +164,7 @@ def test_pipeline_runs_end_to_end_at_admin1(tmp_path):
     )
     admin_path = tmp_path / "admin1.gpkg"
     admin.to_file(admin_path, driver="GPKG")
+    write_admin_source_manifest(admin_path)
 
     population_path = make_worldpop_tif(
         tmp_path / "population.tif",
@@ -204,7 +206,7 @@ def test_pipeline_runs_end_to_end_at_admin1(tmp_path):
             config=config_path,
         )
     )
-    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    table = pd.read_csv(output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
     assert set(table["adm1_pcode"]) == {"TST1", "TST2"}
     assert len(table) == 2
     west = table.loc[table["adm1_pcode"] == "TST1"].iloc[0]
@@ -235,6 +237,7 @@ def test_denominator_mismatch_raises_when_admin_coverage_is_incomplete(tmp_path)
         crs=4326,
     )
     partial_admin.to_file(inputs.admin, driver="GPKG")
+    write_admin_source_manifest(inputs.admin)
     with pytest.raises(RuntimeError, match="denominator mismatch"):
         run_pipeline(inputs)
 
@@ -265,7 +268,7 @@ def test_overlapping_storm_footprints_do_not_double_count_population(tmp_path):
     pd.DataFrame(rows).to_csv(inputs.ibtracs, index=False)
 
     output = run_pipeline(inputs)
-    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    table = pd.read_csv(output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
     storms = pd.read_csv(output / "qc" / "HI06_TST_storms_2026-06-30.csv")
 
     assert len(storms) == 2
@@ -289,8 +292,8 @@ def test_pipeline_is_deterministic_across_repeated_runs(tmp_path):
     first_output = run_pipeline(first_inputs)
     second_output = run_pipeline(second_inputs)
 
-    first_table = pd.read_csv(first_output / "tables" / "HI06_TST_2026-06-30.csv")
-    second_table = pd.read_csv(second_output / "tables" / "HI06_TST_2026-06-30.csv")
+    first_table = pd.read_csv(first_output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
+    second_table = pd.read_csv(second_output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
 
     pd.testing.assert_frame_equal(
         first_table.sort_values("adm2_pcode").reset_index(drop=True),

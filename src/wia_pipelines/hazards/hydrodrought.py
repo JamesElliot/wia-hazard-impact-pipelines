@@ -20,7 +20,12 @@ from ..core.admin import (
 )
 from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
-from ..core.pipeline import build_hazard_run_context, standardize_admin_summary, sync_run_metadata
+from ..core.pipeline import (
+    build_admin_source,
+    build_hazard_run_context,
+    standardize_admin_summary,
+    sync_run_metadata,
+)
 from ..core.rivers import clip_reaches_to_aoi, compute_river_corridor, load_river_reaches
 from ..core.worldpop import bbox_coverage_report, worldpop_profile_and_bounds
 from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate
@@ -64,9 +69,9 @@ def hydrodrought_month_window(
 
     `accumulation_months - 1` extra trailing months are needed before the
     reporting window so the first reported month's rolling accumulation is
-    defined (mirrors SPEI3's own 3-month accumulation, computed upstream by
-    CDS there; computed by this pipeline here since GloFAS is not pre-
-    accumulated).
+    defined (mirrors SPEI's own pre-accumulated CDS product -- now SPEI12,
+    computed upstream by CDS there; computed by this pipeline here since
+    GloFAS is not pre-accumulated).
     """
 
     months_for_accumulation = months_for_last_n(
@@ -516,6 +521,13 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
             "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
         },
     }
+    metadata["admin_source"] = build_admin_source(
+        admin_path=options.admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_gdf),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
 
     # Preflight: WorldPop bbox coverage + a single-day GloFAS sample.
     reported_months = month_window["reported_months"]
@@ -778,7 +790,8 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
         population_affected_column=f"pop_affected_{default_key}",
         pct_affected_column=f"pct_affected_{default_key}",
     )
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_hydro_drought_glofas_sri_{config.as_of_date}.csv"
+    vintage = metadata["admin_source"]["vintage"]
+    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_hydro_drought_glofas_sri_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     append_artifact(
         metadata, "admin_hydrodrought_table", out_csv, f"{admin_label.title()} GloFAS SRI exposure table"

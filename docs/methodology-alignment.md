@@ -20,7 +20,7 @@ rather than defining their own reporting identity.
 
 | Hazard ID | Pipeline ID | Default reporting rule |
 |---|---|---|
-| `drought` | `water_scarcity_spei3` | Any month with SPEI3 ≤ −1.5 |
+| `drought` | `water_scarcity_spei12` | Any month with SPEI12 ≤ −1.5 |
 | `hydrodrought` | `hydro_drought_glofas_sri` | River-corridor population near a GloFAS reach with SRI3 ≤ −1.5 for ≥2 consecutive months |
 | `earthquake` | `earthquake_usgs_shakemap` | Maximum ShakeMap intensity reaches MMI VI |
 | `heat` | `extreme_heat_utci` | UTCI > 32°C for at least three consecutive days |
@@ -86,3 +86,9 @@ Multi-threshold tables retain every threshold. The canonical cross-hazard
 UTCI > 32°C for heat. Earthquake uses MMI VI. Flood, cyclone, and violence have
 one primary reporting threshold. See the individual indicator documents for
 secondary severity bands.
+
+## Method change history
+
+| Date | Hazard | Change | Rationale |
+|---|---|---|---|
+| 2026-07 | `drought` | SPEI3 → SPEI12 (`water_scarcity_spei3` → `water_scarcity_spei12`, method_version 0.1.0 → 0.2.0) | Align this Hazard Impact indicator's accumulation period with the Hazard Exposure indicator, which already reports SPEI12; the two previously used different scales for the same hazard with no documented rationale. Threshold values (−1.0/−1.5/−2.0) are unchanged, consistent with WMO-1173 convention applying the same bands across accumulation periods. See a documented pilot-country population-affected delta in the change's PR description before relying on new SPEI12 outputs. |
