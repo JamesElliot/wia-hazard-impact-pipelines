@@ -303,11 +303,13 @@ def _download_monthly_mean_discharge(
                 "system_version": ["version_4_0"],
                 "hydrological_model": ["lisflood"],
                 "product_type": ["consolidated"],
-                "variable": ["river_discharge_in_the_last_24_hours"],
-                "hyear": [str(y)],
-                "hmonth": [f"{m:02d}"],
-                "hday": days_for_year_month(y, m),
+                "timespan": ["time_mean"],
+                "variable": ["average_river_discharge_in_the_last_24_hours"],
+                "year": [str(y)],
+                "month": [f"{m:02d}"],
+                "day": days_for_year_month(y, m),
                 "data_format": "netcdf",
+                "download_format": "unarchived",
                 "area": cds_area,
             }
             ok, err = download_ewds("cems-glofas-historical", request, raw_path, url=ewds_url, key=ewds_key)
