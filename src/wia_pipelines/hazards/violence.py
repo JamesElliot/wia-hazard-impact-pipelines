@@ -250,7 +250,12 @@ def run_violence_pipeline(
         wp_height, wp_width = src.height, src.width
         wp_nodata = src.nodata
         wp_bounds = src.bounds
-        wp_arr = src.read(1).astype("float64")
+        # float32, not float64: a whole-country 100m raster is large enough
+        # (COL admin2 extent is ~270M pixels) that each extra float64 copy
+        # downstream costs ~2GB, and several such arrays are alive at once --
+        # this was reproducibly OOM-killing large-country runs (see the
+        # QC-figure-3 comment below for a related, previously-patched case).
+        wp_arr = src.read(1).astype("float32")
     metadata["worldpop_ref"] = {
         "crs": str(wp_crs),
         "shape": [int(wp_height), int(wp_width)],
@@ -298,6 +303,27 @@ def run_violence_pipeline(
     admin_units = admin_units.rename(columns={source_pcode_col: pcode_label})
     admin_union = admin_units.geometry.union_all()
     admin_bounds = tuple(float(v) for v in admin_units.total_bounds)
+
+    # --acled-csv may be a multi-country export (e.g. a combined COL+VEN file):
+    # events are only filtered by date/event_type above, not by country. Drop
+    # events far outside this run's admin bounds before the expensive
+    # per-event buffer + unary_union below -- otherwise every run buffers and
+    # unions every other country's events too, which is wasted work and can
+    # exhaust memory on large combined exports. Padding is generous relative
+    # to the largest ACLED proximity buffer (5km, see acled_buffer_km) so no
+    # in-country event is at risk of being dropped.
+    pad_deg = 0.2
+    minx, miny, maxx, maxy = admin_bounds
+    in_bounds = events_wgs84.geometry.x.between(minx - pad_deg, maxx + pad_deg) & events_wgs84.geometry.y.between(
+        miny - pad_deg, maxy + pad_deg
+    )
+    events_wgs84 = events_wgs84.loc[in_bounds].reset_index(drop=True)
+    df = df.loc[in_bounds].reset_index(drop=True)
+    if events_wgs84.empty:
+        raise ValueError(
+            f"No ACLED events found within {config.iso3} admin bounds (+{pad_deg}deg padding) after filters."
+        )
+
     wp_cov = check_worldpop_coverage(admin_bounds, worldpop_path)
     n_inside = int(events_wgs84.within(admin_union).sum())
     metadata["preflight_coverage"] = {
@@ -419,24 +445,31 @@ def run_violence_pipeline(
     write_ras(3, ok=3, current="mask_written")
 
     # Population rasters
+    # Kept in float32 throughout (see wp_arr load comment above): each extra
+    # float64 whole-country array here previously stacked up enough
+    # simultaneous peak memory to OOM-kill large-country runs. np.sum below
+    # is given an explicit float64 accumulator so precision isn't lost even
+    # though the arrays themselves stay float32.
     if wp_nodata is not None:
-        wp_arr = np.where(wp_arr == wp_nodata, 0.0, wp_arr)
-    affected_pop = wp_arr * mask
-    pop_weighted_count = wp_arr * event_count.astype("float64")
+        wp_arr = np.where(wp_arr == wp_nodata, np.float32(0.0), wp_arr).astype("float32")
+    affected_pop = (wp_arr * mask).astype("float32")
+    pop_weighted_count = (wp_arr * event_count.astype("float32")).astype("float32")
     out_profile = wp_profile.copy()
     out_profile.update(
         dtype="float32", count=1, nodata=0, compress="deflate", tiled=True, blockxsize=512, blockysize=512
     )
     with rasterio.open(pop_affected_tif, "w", **out_profile) as dst:
-        dst.write(affected_pop.astype("float32"), 1)
+        dst.write(affected_pop, 1)
     with rasterio.open(pop_weighted_count_tif, "w", **out_profile) as dst:
-        dst.write(pop_weighted_count.astype("float32"), 1)
+        dst.write(pop_weighted_count, 1)
     write_ras(4, ok=4, current="complete")
 
-    total_pop = float(wp_arr.sum())
-    affected_population = float(affected_pop.sum())
+    total_pop = float(wp_arr.sum(dtype="float64"))
+    affected_population = float(affected_pop.sum(dtype="float64"))
     pct_affected = (affected_population / total_pop * 100.0) if total_pop > 0 else 0.0
-    pop_weighted_mean_event_count = (float(pop_weighted_count.sum()) / total_pop) if total_pop > 0 else 0.0
+    pop_weighted_mean_event_count = (
+        (float(pop_weighted_count.sum(dtype="float64")) / total_pop) if total_pop > 0 else 0.0
+    )
     _add_artifact("event_count", event_count_tif, "Buffered ACLED event count")
     _add_artifact("hazard_mask", mask_tif, "Binary hazard mask from event count threshold")
     _add_artifact("pop_affected_raster", pop_affected_tif, "WorldPop x binary mask")
