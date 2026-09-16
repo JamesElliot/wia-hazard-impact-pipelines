@@ -108,6 +108,32 @@
       "items": {
         "type": "object"
       }
+    },
+    "admin_source": {
+      "type": "object",
+      "description": "Provenance of the administrative boundary dataset used to aggregate this run. Optional for backward compatibility with runs predating this field; validated when present.",
+      "required": [
+        "authority",
+        "vintage",
+        "access_date",
+        "path",
+        "sha256",
+        "admin_level",
+        "unit_count",
+        "pcode_field"
+      ],
+      "properties": {
+        "authority": { "type": "string", "minLength": 1 },
+        "vintage": { "type": "string", "pattern": "^[A-Z]+[0-9]{4}-(0[1-9]|1[0-2])$" },
+        "access_date": { "type": "string", "format": "date" },
+        "path": { "type": "string", "minLength": 1 },
+        "asset_id": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "minLength": 1 },
+        "admin_level": { "type": "integer", "minimum": 0 },
+        "unit_count": { "type": "integer", "minimum": 0 },
+        "pcode_field": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true

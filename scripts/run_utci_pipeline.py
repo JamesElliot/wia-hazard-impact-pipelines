@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
+from wia_pipelines.core.assets import resolve_admin_path
 from wia_pipelines.batch.readiness import worldpop_path_for_iso3
 from wia_pipelines.hazards.utci import (
     UtciPipelineRunOptions,
@@ -20,7 +21,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lookback-months", type=int, default=12)
     p.add_argument("--target-adm-level", type=int, default=2)
     p.add_argument("--output-root", default="./outputs")
-    p.add_argument("--admin-path", default="./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip")
+    p.add_argument(
+        "--admin-path",
+        default=None,
+        help=(
+            "Admin boundary asset. Defaults to a per-country COD-AB override "
+            "registered under data/cod-ab/*/admin_source.json when one exists "
+            "for --iso3, else data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip."
+        ),
+    )
     p.add_argument("--admin-layer", default=None)
     p.add_argument("--iso3-field", default="iso3")
     p.add_argument("--worldpop-path", default=None)
@@ -42,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     iso3 = str(args.iso3).upper()
+    admin_path = resolve_admin_path(args.admin_path, iso3=iso3)
     worldpop_path = (
         Path(args.worldpop_path).expanduser().resolve()
         if args.worldpop_path
@@ -54,7 +64,7 @@ def main() -> int:
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
         "target_adm_level": int(args.target_adm_level),
-        "admin_path": str(Path(args.admin_path).expanduser().resolve()),
+        "admin_path": str(admin_path),
         "admin_layer": args.admin_layer or f"admin{int(args.target_adm_level)}",
         "worldpop_path": str(worldpop_path),
         "output_root": str(Path(args.output_root).expanduser().resolve()),
@@ -77,7 +87,7 @@ def main() -> int:
                 output_root=Path(args.output_root).expanduser().resolve(),
                 target_adm_level=int(args.target_adm_level),
             ),
-            admin_path=Path(args.admin_path).expanduser().resolve(),
+            admin_path=admin_path,
             worldpop_path=worldpop_path,
             admin_layer=args.admin_layer or f"admin{int(args.target_adm_level)}",
             iso3_field=args.iso3_field,

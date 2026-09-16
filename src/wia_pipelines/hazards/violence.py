@@ -13,8 +13,9 @@ from ..core.admin import (
     resolve_admin_pcode_column,
 )
 from ..core.aggregation import labelled_sum
-from ..core.assets import checksum_path, shared_cache_root
+from ..core.assets import checksum_path, load_admin_source_manifest, shared_cache_root
 from ..core.pipeline import (
+    build_admin_source,
     build_hazard_run_context,
     record_artifact,
     standardize_admin_summary,
@@ -156,6 +157,8 @@ def run_violence_pipeline(
     if not acled_path.exists():
         raise FileNotFoundError(f"Missing ACLED CSV: {acled_path}")
 
+    admin_source_vintage = load_admin_source_manifest(admin_path)["vintage"]
+
     selected_types = (
         list(included_event_types) if included_event_types else list(DEFAULT_INCLUDED_EVENT_TYPES)
     )
@@ -192,7 +195,7 @@ def run_violence_pipeline(
         layout["rasters"] / "violence" / f"{config.run_id}_violence_pop_weighted_event_count.tif"
     )
     footprint_gpkg = layout["intermediate"] / "violence" / f"{config.run_id}_violence_footprint.gpkg"
-    admin_stats_csv = layout["tables"] / f"{config.run_id}_{admin_label}_stats.csv"
+    admin_stats_csv = layout["tables"] / f"{config.run_id}_{admin_label}_{admin_source_vintage}_stats.csv"
     for p in [
         event_count_tif,
         mask_tif,
@@ -247,7 +250,12 @@ def run_violence_pipeline(
         wp_height, wp_width = src.height, src.width
         wp_nodata = src.nodata
         wp_bounds = src.bounds
-        wp_arr = src.read(1).astype("float64")
+        # float32, not float64: a whole-country 100m raster is large enough
+        # (COL admin2 extent is ~270M pixels) that each extra float64 copy
+        # downstream costs ~2GB, and several such arrays are alive at once --
+        # this was reproducibly OOM-killing large-country runs (see the
+        # QC-figure-3 comment below for a related, previously-patched case).
+        wp_arr = src.read(1).astype("float32")
     metadata["worldpop_ref"] = {
         "crs": str(wp_crs),
         "shape": [int(wp_height), int(wp_width)],
@@ -295,6 +303,27 @@ def run_violence_pipeline(
     admin_units = admin_units.rename(columns={source_pcode_col: pcode_label})
     admin_union = admin_units.geometry.union_all()
     admin_bounds = tuple(float(v) for v in admin_units.total_bounds)
+
+    # --acled-csv may be a multi-country export (e.g. a combined COL+VEN file):
+    # events are only filtered by date/event_type above, not by country. Drop
+    # events far outside this run's admin bounds before the expensive
+    # per-event buffer + unary_union below -- otherwise every run buffers and
+    # unions every other country's events too, which is wasted work and can
+    # exhaust memory on large combined exports. Padding is generous relative
+    # to the largest ACLED proximity buffer (5km, see acled_buffer_km) so no
+    # in-country event is at risk of being dropped.
+    pad_deg = 0.2
+    minx, miny, maxx, maxy = admin_bounds
+    in_bounds = events_wgs84.geometry.x.between(minx - pad_deg, maxx + pad_deg) & events_wgs84.geometry.y.between(
+        miny - pad_deg, maxy + pad_deg
+    )
+    events_wgs84 = events_wgs84.loc[in_bounds].reset_index(drop=True)
+    df = df.loc[in_bounds].reset_index(drop=True)
+    if events_wgs84.empty:
+        raise ValueError(
+            f"No ACLED events found within {config.iso3} admin bounds (+{pad_deg}deg padding) after filters."
+        )
+
     wp_cov = check_worldpop_coverage(admin_bounds, worldpop_path)
     n_inside = int(events_wgs84.within(admin_union).sum())
     metadata["preflight_coverage"] = {
@@ -416,24 +445,35 @@ def run_violence_pipeline(
     write_ras(3, ok=3, current="mask_written")
 
     # Population rasters
+    # Kept in float32 throughout (see wp_arr load comment above): each extra
+    # float64 whole-country array here previously stacked up enough
+    # simultaneous peak memory to OOM-kill large-country runs. np.sum below
+    # is given an explicit float64 accumulator so precision isn't lost even
+    # though the arrays themselves stay float32.
     if wp_nodata is not None:
-        wp_arr = np.where(wp_arr == wp_nodata, 0.0, wp_arr)
-    affected_pop = wp_arr * mask
-    pop_weighted_count = wp_arr * event_count.astype("float64")
+        # In-place instead of np.where(...): np.where would allocate a full
+        # extra whole-country float32 copy just to zero out nodata, which is
+        # exactly the kind of transient large-country memory spike described
+        # in the wp_arr load comment above.
+        wp_arr[wp_arr == wp_nodata] = np.float32(0.0)
+    affected_pop = (wp_arr * mask).astype("float32")
+    pop_weighted_count = (wp_arr * event_count.astype("float32")).astype("float32")
     out_profile = wp_profile.copy()
     out_profile.update(
         dtype="float32", count=1, nodata=0, compress="deflate", tiled=True, blockxsize=512, blockysize=512
     )
     with rasterio.open(pop_affected_tif, "w", **out_profile) as dst:
-        dst.write(affected_pop.astype("float32"), 1)
+        dst.write(affected_pop, 1)
     with rasterio.open(pop_weighted_count_tif, "w", **out_profile) as dst:
-        dst.write(pop_weighted_count.astype("float32"), 1)
+        dst.write(pop_weighted_count, 1)
     write_ras(4, ok=4, current="complete")
 
-    total_pop = float(wp_arr.sum())
-    affected_population = float(affected_pop.sum())
+    total_pop = float(wp_arr.sum(dtype="float64"))
+    affected_population = float(affected_pop.sum(dtype="float64"))
     pct_affected = (affected_population / total_pop * 100.0) if total_pop > 0 else 0.0
-    pop_weighted_mean_event_count = (float(pop_weighted_count.sum()) / total_pop) if total_pop > 0 else 0.0
+    pop_weighted_mean_event_count = (
+        (float(pop_weighted_count.sum(dtype="float64")) / total_pop) if total_pop > 0 else 0.0
+    )
     _add_artifact("event_count", event_count_tif, "Buffered ACLED event count")
     _add_artifact("hazard_mask", mask_tif, "Binary hazard mask from event count threshold")
     _add_artifact("pop_affected_raster", pop_affected_tif, "WorldPop x binary mask")
@@ -461,10 +501,26 @@ def run_violence_pipeline(
         "pop_weighted_mean_event_count": pop_weighted_mean_event_count,
     }
 
+    # QC figures 2/3 render into a 6x6in PNG at dpi=150 (~900x900 output
+    # pixels), so feeding them a whole-country 100m array (COD is ~23000x
+    # 22600 = ~520M pixels) is pure waste: imshow's colormap/normalize step
+    # materializes an RGBA buffer at input resolution before downsampling for
+    # display, and `np.where(mask == 1, 1, np.nan)` alone promotes a full-size
+    # uint8 mask to a full-size float64 array (~4GB for COD). Together these
+    # were the actual source of the large-country OOM (not the analysis
+    # arrays below, which stay at native resolution). A simple stride
+    # subsample keeps the QC preview visually identical while cutting this
+    # plotting-only working set by ~100-200x; zonal stats never see these
+    # decimated copies.
+    plot_max_dim = 1500
+    plot_step = max(1, max(mask.shape) // plot_max_dim)
+    mask_plot = mask[::plot_step, ::plot_step]
+    wp_plot = wp_arr[::plot_step, ::plot_step]
+
     # QC figure 2: binary mask
     extent = (wp_bounds.left, wp_bounds.right, wp_bounds.bottom, wp_bounds.top)
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(mask, interpolation="nearest", extent=extent, origin="upper")
+    ax.imshow(mask_plot, interpolation="nearest", extent=extent, origin="upper")
     admin_units.boundary.plot(ax=ax, linewidth=0.5, edgecolor="black", alpha=0.8)
     ax.set_title(f"{config.iso3} violence mask (>= {int(mask_threshold_events)} events)")
     ax.set_xlabel("Longitude")
@@ -475,11 +531,10 @@ def run_violence_pipeline(
     _add_artifact("qc_mask", qc_mask_png, "Binary violence mask")
 
     # QC figure 3: mask on WorldPop
-    wp_plot = wp_arr.copy()
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(wp_plot, interpolation="nearest", extent=extent, origin="upper")
     ax.imshow(
-        np.where(mask == 1, 1, np.nan), interpolation="nearest", extent=extent, origin="upper", alpha=0.35
+        np.where(mask_plot == 1, 1, np.nan), interpolation="nearest", extent=extent, origin="upper", alpha=0.35
     )
     admin_units.boundary.plot(ax=ax, linewidth=0.5, edgecolor="black", alpha=0.8)
     ax.set_title(f"{config.iso3} violence mask on WorldPop")
@@ -489,6 +544,7 @@ def run_violence_pipeline(
     fig.savefig(qc_mask_worldpop_png, dpi=150)
     plt.close(fig)
     _add_artifact("qc_mask_worldpop", qc_mask_worldpop_png, "Violence mask overlay on WorldPop")
+    del mask_plot, wp_plot
 
     # Admin zonal stats.
     # PERF-006: rasterize admin polygons once (each pixel labelled 1..n_admin)
@@ -545,6 +601,13 @@ def run_violence_pipeline(
         pct_affected_column="pct_affected",
     )
     admin_df.to_csv(admin_stats_csv, index=False)
+    metadata["admin_source"] = build_admin_source(
+        admin_path=admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_df),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
     write_zon(4, ok=4, current=f"{admin_label}_table_written")
     _add_artifact("admin_stats", admin_stats_csv, f"{admin_label.title()} violence population summary")
 

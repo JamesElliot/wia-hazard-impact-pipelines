@@ -1,0 +1,15 @@
+# PSE admin3 (governorate) field mapping for the cyclone/earthquake
+# YAML-config pipelines. The shared default.yml only ships adm0-adm2 field
+# names, so an admin3 run needs adm3_pcode added explicitly or
+# load_yaml_hazard_admin raises "Admin input is missing configured admin-3
+# key". --target-adm-level 3 and --admin-layer admin3 (passed on the CLI)
+# set config.admin.level/layer; this file only fills in the level-3 field
+# names against the global admin archive's "admin3" layer schema. Note: for
+# PSE the admin3 layer is identical to admin2 (COD-AB has no finer
+# subdivision below governorate for State of Palestine) - same adm3_pcode
+# values as adm2_pcode.
+admin:
+  fields:
+    adm3_pcode: adm3_pcode
+    adm3_name_en: adm3_name
+    adm3_name_local: adm3_name1

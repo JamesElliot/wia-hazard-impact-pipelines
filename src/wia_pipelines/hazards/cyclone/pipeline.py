@@ -19,7 +19,7 @@ from shapely.ops import unary_union
 from ...config import RunConfig, validate_run_metadata
 from ...core.assets import checksum_path, link_cached_asset, shared_cache_root
 from ...core.io_paths import append_artifact
-from ...core.pipeline import build_hazard_run_context, standardize_admin_summary
+from ...core.pipeline import build_admin_source, build_hazard_run_context, standardize_admin_summary
 from .._admin_config import load_yaml_hazard_admin
 from ._version import __version__
 from .aggregate import aggregate_population
@@ -157,6 +157,13 @@ def run_pipeline(inputs: RunInputs) -> Path:
 
     fields = config["admin"]["fields"]
     admin = load_yaml_hazard_admin(inputs.admin, iso3, config["admin"])
+    admin_source = build_admin_source(
+        admin_path=inputs.admin,
+        admin_level=int(config["admin"]["level"]),
+        unit_count=len(admin),
+        pcode_field=fields[f"adm{int(config['admin']['level'])}_pcode"],
+        checksum_cache_dir=shared_cache_root(inputs.out, "checksums"),
+    )
     tracks = read_ibtracs(inputs.ibtracs, window)
     candidates = select_candidate_points(tracks, admin, float(config["footprint"]["track_buffer_km"]))
     bands = [int(value) for value in config["footprint"]["severity_bands_kmh"]]
@@ -379,7 +386,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
         pct_affected_column="pct_affected",
     )
 
-    csv_path = layout["tables"] / f"HI06_{iso3}_{end_label}.csv"
+    csv_path = layout["tables"] / f"HI06_{iso3}_{admin_source['vintage']}_{end_label}.csv"
     storm_path = layout["qc"] / f"HI06_{iso3}_storms_{end_label}.csv"
     table.to_csv(csv_path, index=False, float_format="%.6f")
     audit_columns = [
@@ -449,6 +456,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
         gdacs_audit_path,
         artifact_paths,
         gdacs_cache_source,
+        admin_source,
     )
     manifest_path = output_dir / "run_metadata.json"
     validate_run_metadata(manifest)
@@ -493,6 +501,7 @@ def _manifest(
     gdacs_audit_path=None,
     artifact_paths=None,
     gdacs_cache_source=None,
+    admin_source=None,
 ):
     input_paths = {
         "ibtracs": Path(inputs.ibtracs),
@@ -509,6 +518,7 @@ def _manifest(
     metadata = base_metadata
     metadata.update(
         {
+            "admin_source": admin_source,
             "indicator": "HI-06",
             "pipeline_version": __version__,
             "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),

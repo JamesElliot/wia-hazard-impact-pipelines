@@ -132,8 +132,22 @@ def _default_schema_path() -> Path:
 def validate_run_metadata(
     metadata: dict[str, Any],
     schema_path: str | Path | None = None,
+    *,
+    require_admin_source: bool = False,
 ) -> None:
+    """Validate `metadata` against the run_metadata schema.
+
+    `require_admin_source` is opt-in (default False, matching every existing
+    caller's behavior exactly): when True, `admin_source` is additionally
+    required, for a deliberate "is this run publication-ready" gate distinct
+    from ordinary schema validation -- most runs, including every historical
+    one written before this field existed, remain schema-valid without it.
+    """
+
     schema_file = Path(schema_path) if schema_path else _default_schema_path()
     run_schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    if require_admin_source:
+        run_schema = dict(run_schema)
+        run_schema["required"] = list(run_schema["required"]) + ["admin_source"]
     jsonschema.Draft202012Validator.check_schema(run_schema)
     jsonschema.validate(instance=metadata, schema=run_schema)

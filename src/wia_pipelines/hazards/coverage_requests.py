@@ -16,7 +16,7 @@ def spei_sample_request(
 ) -> dict[str, Any]:
     return {
         "variable": ["standardised_precipitation_evapotranspiration_index"],
-        "accumulation_period": ["3"],
+        "accumulation_period": ["12"],
         "version": "1_0",
         "product_type": ["reanalysis"],
         "dataset_type": "consolidated_dataset",
@@ -48,11 +48,13 @@ def glofas_sample_request(
         "system_version": [system_version],
         "hydrological_model": [hydrological_model],
         "product_type": ["consolidated"],
-        "variable": ["river_discharge_in_the_last_24_hours"],
-        "hyear": [str(year)],
-        "hmonth": [f"{month:02d}"],
-        "hday": [f"{day:02d}"],
+        "timespan": ["time_mean"],
+        "variable": ["average_river_discharge_in_the_last_24_hours"],
+        "year": [str(year)],
+        "month": [f"{month:02d}"],
+        "day": [f"{day:02d}"],
         "data_format": "netcdf",
+        "download_format": "unarchived",
         "area": area_nwse,
     }
 

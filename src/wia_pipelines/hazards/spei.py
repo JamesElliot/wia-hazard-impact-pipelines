@@ -19,7 +19,12 @@ from ..core.admin import (
 )
 from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
-from ..core.pipeline import build_hazard_run_context, standardize_admin_summary, sync_run_metadata
+from ..core.pipeline import (
+    build_admin_source,
+    build_hazard_run_context,
+    standardize_admin_summary,
+    sync_run_metadata,
+)
 from ..core.progress import make_progress_writer
 from ..core.worldpop import bbox_coverage_report, worldpop_profile_and_bounds
 from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate, run_cds_single_month_check
@@ -143,7 +148,7 @@ def _resolve_thresholds(thresholds: dict[str, float] | None) -> dict[str, float]
 
 
 def _find_spei_var(ds) -> str:
-    preferred = ("SPEI3", "spei3", "spei", "standardised_precipitation_evapotranspiration_index")
+    preferred = ("SPEI12", "spei12", "spei", "standardised_precipitation_evapotranspiration_index")
     spatial_pairs = (("lat", "lon"), ("latitude", "longitude"), ("y", "x"))
 
     def _is_spatial_time_var(name: str) -> bool:
@@ -246,7 +251,7 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     for p in dirs.values():
         p.mkdir(parents=True, exist_ok=True)
 
-    cache_root = Path(config.output_root).resolve() / "_cache" / "water_scarcity_spei3" / iso3
+    cache_root = Path(config.output_root).resolve() / "_cache" / "water_scarcity_spei12" / iso3
     cache_dirs = {
         "cds_raw": cache_root / "cds_raw",
         "cds_extracted": cache_root / "cds_raw" / "extracted",
@@ -317,6 +322,13 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
             "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
         },
     }
+    metadata["admin_source"] = build_admin_source(
+        admin_path=options.admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_gdf),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
 
     # Preflight coverage checks.
     sample_year = int(window_months[0].year)
@@ -377,7 +389,7 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
 
     months = months_for_last_n(config.as_of_date, n_months=config.lookback_months)
     end_yyyymm = pd.to_datetime(config.as_of_date).strftime("%Y%m")
-    cache_key = f"{iso3}_spei3_{aoi_hash}_{end_yyyymm}"
+    cache_key = f"{iso3}_spei12_{aoi_hash}_{end_yyyymm}"
     manifest: list[dict[str, Any]] = []
     download_writer = make_progress_writer(dl_status_path, "downloads", len(months))
     download_writer(0, ok=0, failed=0, current=None)
@@ -387,7 +399,7 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     def _spei_cds_request(year: int, month: int, tier: str) -> dict[str, Any]:
         return {
             "variable": ["standardised_precipitation_evapotranspiration_index"],
-            "accumulation_period": ["3"],
+            "accumulation_period": ["12"],
             "version": "1_0",
             "product_type": ["reanalysis"],
             "dataset_type": tier,
@@ -417,8 +429,8 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
             failed_months += 1
         download_writer(idx, ok=ok_months, failed=failed_months, current=month_label)
 
-    manifest_path = ensure_downloads(manifest=manifest, kind="spei3", logs_dir=dirs["logs"])
-    append_artifact(metadata, "cds_manifest_spei3", manifest_path, f"{len(manifest)} CDS request rows")
+    manifest_path = ensure_downloads(manifest=manifest, kind="spei12", logs_dir=dirs["logs"])
+    append_artifact(metadata, "cds_manifest_spei12", manifest_path, f"{len(manifest)} CDS request rows")
     ok_df = pd.DataFrame([m for m in manifest if m.get("ok")])
     if ok_df.empty:
         _sync_metadata()
@@ -620,7 +632,8 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         population_affected_column=f"pop_affected_{default_key}",
         pct_affected_column=f"pct_affected_{default_key}",
     )
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_water_scarcity_spei3_{config.as_of_date}.csv"
+    vintage = metadata["admin_source"]["vintage"]
+    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_water_scarcity_spei12_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     append_artifact(
         metadata, "admin_water_scarcity_table", out_csv, f"{admin_label.title()} SPEI exposure table"
@@ -669,7 +682,7 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     qc_df.to_csv(qc_csv, index=False)
     append_artifact(metadata, "spei_qc_table", qc_csv, "SPEI QC summary table")
 
-    metadata["pipeline"] = "water_scarcity_spei3"
+    metadata["pipeline"] = "water_scarcity_spei12"
     metadata["aoi"] = {
         "country_bounds_4326": {"west": west, "south": south, "east": east, "north": north},
         "cds_area": cds_area,

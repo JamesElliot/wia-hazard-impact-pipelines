@@ -1,16 +1,19 @@
-# Drought indicator (SPEI3)
+# Drought indicator (SPEI12)
 
 ## Definition
 
 The reference implementation downloads the Copernicus
 `derived-drought-historical-monthly` product through CDS and selects the
-three-month Standardized Precipitation Evapotranspiration Index (SPEI3).
+twelve-month Standardized Precipitation Evapotranspiration Index (SPEI12),
+aligning this Hazard Impact indicator's accumulation period with the
+Hazard Exposure indicator (see the method change history in
+`docs/methodology-alignment.md`).
 
 Default thresholds are −1.0, −1.5, and −2.0. For each threshold, a pixel is
 affected when any month in the configured analysis window has:
 
 ```text
-SPEI3 <= threshold
+SPEI12 <= threshold
 ```
 
 The default reporting threshold is −1.5. Affected population is WorldPop on

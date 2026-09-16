@@ -50,6 +50,30 @@ def make_worldpop_tif(
     return path
 
 
+def write_admin_source_manifest(
+    admin_path: Path,
+    *,
+    authority: str = "TEST",
+    vintage: str = "TEST2026-01",
+    access_date: str = "2026-01-01",
+) -> Path:
+    """Write a matching admin_source.json sidecar next to `admin_path`.
+
+    Hazard pipelines fail fast (AdminSourceManifestError) if this sidecar is
+    missing -- see core.assets.load_admin_source_manifest -- so any fixture
+    that writes an admin boundary file for a hazard pipeline to consume must
+    also write this sidecar.
+    """
+    import json
+
+    manifest_path = Path(admin_path).parent / "admin_source.json"
+    manifest_path.write_text(
+        json.dumps({"authority": authority, "vintage": vintage, "access_date": access_date}),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
 def make_admin_gpkg(
     path: Path,
     *,
@@ -82,4 +106,5 @@ def make_admin_gpkg(
     if layer:
         kwargs["layer"] = layer
     gdf.to_file(path, **kwargs)
+    write_admin_source_manifest(path)
     return path

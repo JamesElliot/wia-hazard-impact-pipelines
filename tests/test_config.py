@@ -116,6 +116,61 @@ class RunConfigTests(unittest.TestCase):
         with self.assertRaises(jsonschema.exceptions.ValidationError):
             validate_run_metadata(metadata)
 
+    def _valid_admin_source(self) -> dict:
+        return {
+            "authority": "COD",
+            "vintage": "COD2026-06",
+            "access_date": "2026-06-14",
+            "path": "/data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip",
+            "sha256": "abc123",
+            "admin_level": 2,
+            "unit_count": 401,
+            "pcode_field": "adm2_pcode",
+        }
+
+    def test_metadata_schema_admin_source_optional_by_default(self) -> None:
+        # A run predating this field, or one where require_admin_source is not
+        # requested, must remain schema-valid without it.
+        config = RunConfig(hazard="drought", iso3="MLI", as_of_date="2025-12-31")
+        metadata = initialize_run_metadata(config)
+        validate_run_metadata(metadata)
+
+    def test_metadata_schema_validates_admin_source_when_present(self) -> None:
+        config = RunConfig(hazard="drought", iso3="MLI", as_of_date="2025-12-31")
+        metadata = initialize_run_metadata(config)
+        metadata["admin_source"] = self._valid_admin_source()
+        validate_run_metadata(metadata)
+
+    def test_metadata_schema_rejects_incomplete_admin_source(self) -> None:
+        config = RunConfig(hazard="drought", iso3="MLI", as_of_date="2025-12-31")
+        metadata = initialize_run_metadata(config)
+        admin_source = self._valid_admin_source()
+        del admin_source["vintage"]
+        metadata["admin_source"] = admin_source
+        with self.assertRaises(jsonschema.exceptions.ValidationError):
+            validate_run_metadata(metadata)
+
+    def test_metadata_schema_rejects_malformed_vintage_token(self) -> None:
+        config = RunConfig(hazard="drought", iso3="MLI", as_of_date="2025-12-31")
+        metadata = initialize_run_metadata(config)
+        admin_source = self._valid_admin_source()
+        admin_source["vintage"] = "not-a-vintage"
+        metadata["admin_source"] = admin_source
+        with self.assertRaises(jsonschema.exceptions.ValidationError):
+            validate_run_metadata(metadata)
+
+    def test_require_admin_source_rejects_absence(self) -> None:
+        config = RunConfig(hazard="drought", iso3="MLI", as_of_date="2025-12-31")
+        metadata = initialize_run_metadata(config)
+        with self.assertRaises(jsonschema.exceptions.ValidationError):
+            validate_run_metadata(metadata, require_admin_source=True)
+
+    def test_require_admin_source_accepts_presence(self) -> None:
+        config = RunConfig(hazard="drought", iso3="MLI", as_of_date="2025-12-31")
+        metadata = initialize_run_metadata(config)
+        metadata["admin_source"] = self._valid_admin_source()
+        validate_run_metadata(metadata, require_admin_source=True)
+
 
 if __name__ == "__main__":
     unittest.main()

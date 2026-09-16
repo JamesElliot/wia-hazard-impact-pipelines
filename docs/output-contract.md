@@ -83,3 +83,29 @@ canonical paths, emitted artifacts, stable pipeline and method-version IDs, and
 the affected-population rule. Dataset-specific provenance remains mandatory for
 production publication even where an upstream source cannot expose it
 programmatically.
+
+### Administrative boundary provenance
+
+Every hazard run records an `admin_source` block in `run_metadata.json`,
+schema-validated against `schemas/run_metadata.schema.json`:
+
+| Field | Meaning |
+|---|---|
+| `authority` | Boundary-set publisher (e.g. `COD`, `GADM`, `NSO`) |
+| `vintage` | `<AUTHORITY><YYYY-MM>` token, e.g. `COD2026-06` |
+| `access_date` | Date the boundary set was obtained |
+| `path` | Resolved absolute path to the admin dataset used |
+| `sha256` | Content checksum of the admin dataset |
+| `admin_level` | Admin level aggregated to |
+| `unit_count` | Number of admin units in the aggregation |
+| `pcode_field` | P-code column used for the join |
+
+The vintage token also appears in every emitted table filename, so
+provenance survives a table being copied out of its run directory. A run
+fails fast at start if the admin dataset's sidecar `admin_source.json`
+manifest (adjacent to the resolved admin path, e.g.
+`data/cod-ab/admin_source.json`) is missing or malformed — see
+`core/assets.py:load_admin_source_manifest`. `admin_source` is optional in
+the schema so historical runs that predate this field remain valid; a
+publication-readiness check can additionally require it via
+`wia-hazards validate-metadata --require-admin-source`.

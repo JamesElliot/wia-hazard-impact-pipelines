@@ -20,7 +20,12 @@ from ..core.admin import (
 )
 from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
-from ..core.pipeline import build_hazard_run_context, standardize_admin_summary, sync_run_metadata
+from ..core.pipeline import (
+    build_admin_source,
+    build_hazard_run_context,
+    standardize_admin_summary,
+    sync_run_metadata,
+)
 from ..core.rivers import clip_reaches_to_aoi, compute_river_corridor, load_river_reaches
 from ..core.worldpop import bbox_coverage_report, worldpop_profile_and_bounds
 from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate
@@ -64,9 +69,9 @@ def hydrodrought_month_window(
 
     `accumulation_months - 1` extra trailing months are needed before the
     reporting window so the first reported month's rolling accumulation is
-    defined (mirrors SPEI3's own 3-month accumulation, computed upstream by
-    CDS there; computed by this pipeline here since GloFAS is not pre-
-    accumulated).
+    defined (mirrors SPEI's own pre-accumulated CDS product -- now SPEI12,
+    computed upstream by CDS there; computed by this pipeline here since
+    GloFAS is not pre-accumulated).
     """
 
     months_for_accumulation = months_for_last_n(
@@ -241,6 +246,19 @@ def _ensure_rio_spatial_dims(da):
     raise ValueError(f"Could not infer spatial dims for DataArray with dims={da.dims}.")
 
 
+def _normalize_longitude_180(da):
+    """EWDS/GloFAS grids are sometimes returned on a 0-360 longitude axis
+    (e.g. for AOIs west of the prime meridian). rio.clip compares raw
+    coordinate values against the -180/180 admin geometry, so a 0-360 axis
+    silently yields NoDataInBounds even though the area physically overlaps.
+    Wrap and re-sort onto -180/180 whenever any coordinate exceeds 180."""
+    lon_name = "lon" if "lon" in da.coords else "longitude"
+    lon = da.coords[lon_name]
+    if float(lon.max()) > 180.0:
+        da = da.assign_coords({lon_name: ((lon + 180.0) % 360.0) - 180.0}).sortby(lon_name)
+    return da
+
+
 def _download_monthly_mean_discharge(
     months: list[tuple[int, int]],
     *,
@@ -293,20 +311,36 @@ def _download_monthly_mean_discharge(
         raw_path = cache_dirs["glofas_raw"] / f"{cache_key}_{y}{m:02d}.download"
         ok = raw_path.exists() and raw_path.stat().st_size > 0
         err = None
+        product_type_used = None
         if not ok:
-            request = {
-                "system_version": ["version_4_0"],
-                "hydrological_model": ["lisflood"],
-                "product_type": ["consolidated"],
-                "variable": ["river_discharge_in_the_last_24_hours"],
-                "hyear": [str(y)],
-                "hmonth": [f"{m:02d}"],
-                "hday": days_for_year_month(y, m),
-                "data_format": "netcdf",
-                "area": cds_area,
+            for product_type in ("consolidated", "intermediate"):
+                request = {
+                    "system_version": ["version_4_0"],
+                    "hydrological_model": ["lisflood"],
+                    "product_type": [product_type],
+                    "timespan": ["time_mean"],
+                    "variable": ["average_river_discharge_in_the_last_24_hours"],
+                    "year": [str(y)],
+                    "month": [f"{m:02d}"],
+                    "day": days_for_year_month(y, m),
+                    "data_format": "netcdf",
+                    "download_format": "unarchived",
+                    "area": cds_area,
+                }
+                ok, err = download_ewds("cems-glofas-historical", request, raw_path, url=ewds_url, key=ewds_key)
+                if ok:
+                    product_type_used = product_type
+                    break
+        manifest.append(
+            {
+                "year": y,
+                "month": f"{m:02d}",
+                "ok": bool(ok),
+                "error": err,
+                "product_type": product_type_used,
+                "path": str(raw_path),
             }
-            ok, err = download_ewds("cems-glofas-historical", request, raw_path, url=ewds_url, key=ewds_key)
-        manifest.append({"year": y, "month": f"{m:02d}", "ok": bool(ok), "error": err, "path": str(raw_path)})
+        )
         if not ok:
             _status(idx, len(months), month_label)
             continue
@@ -516,6 +550,13 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
             "sha256": checksum_path(options.admin_path, cache_dir=checksum_cache_dir),
         },
     }
+    metadata["admin_source"] = build_admin_source(
+        admin_path=options.admin_path,
+        admin_level=adm_level,
+        unit_count=len(admin_gdf),
+        pcode_field=pcode_label,
+        checksum_cache_dir=checksum_cache_dir,
+    )
 
     # Preflight: WorldPop bbox coverage + a single-day GloFAS sample.
     reported_months = month_window["reported_months"]
@@ -604,8 +645,12 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
         f"{len(month_window['months_for_accumulation'])} window months",
     )
 
-    baseline_da = _ensure_rio_spatial_dims(baseline_da).rio.write_crs("EPSG:4326", inplace=False)
-    window_da = _ensure_rio_spatial_dims(window_da).rio.write_crs("EPSG:4326", inplace=False)
+    baseline_da = _ensure_rio_spatial_dims(
+        _normalize_longitude_180(_ensure_rio_spatial_dims(baseline_da))
+    ).rio.write_crs("EPSG:4326", inplace=False)
+    window_da = _ensure_rio_spatial_dims(
+        _normalize_longitude_180(_ensure_rio_spatial_dims(window_da))
+    ).rio.write_crs("EPSG:4326", inplace=False)
     baseline_da = baseline_da.rio.clip(
         [mapping(country_geom_4326)], crs="EPSG:4326", drop=True, all_touched=True
     )
@@ -778,7 +823,8 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
         population_affected_column=f"pop_affected_{default_key}",
         pct_affected_column=f"pct_affected_{default_key}",
     )
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_hydro_drought_glofas_sri_{config.as_of_date}.csv"
+    vintage = metadata["admin_source"]["vintage"]
+    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_hydro_drought_glofas_sri_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     append_artifact(
         metadata, "admin_hydrodrought_table", out_csv, f"{admin_label.title()} GloFAS SRI exposure table"

@@ -126,7 +126,7 @@ def test_local_gdacs_polygon_fills_missing_primary_footprint(tmp_path: Path):
     ).to_file(gdacs_path, driver="GPKG")
     fallback_inputs = RunInputs(**{**inputs.__dict__, "gdacs_footprints": gdacs_path})
     output = run_pipeline(fallback_inputs)
-    table = pd.read_csv(output / "tables" / "HI06_TST_2026-06-30.csv")
+    table = pd.read_csv(output / "tables" / "HI06_TST_TEST2026-01_2026-06-30.csv")
     storms = pd.read_csv(output / "qc" / "HI06_TST_storms_2026-06-30.csv")
     assert table["flag_method_fallback"].all()
     assert table["flag_windradii"].eq("fallback").all()

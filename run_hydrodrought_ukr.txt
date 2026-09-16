@@ -1,0 +1,11 @@
+cd /Users/jamesbrown/code/wia-hazard-layers
+source /Users/jamesbrown/miniforge3/etc/profile.d/conda.sh
+conda activate wia-hazard-pipelines
+nohup wia-hazards run-hydrodrought \
+  --iso3 UKR \
+  --as-of-date 2026-06-30 \
+  --lookback-months 12 \
+  --worldpop-path ./data/population/ukr_pop_2026_CN_100m_R2025A_v1.tif \
+  > ~/ukr_hydrodrought.log 2>&1 &
+echo "Started with PID $!"
+disown

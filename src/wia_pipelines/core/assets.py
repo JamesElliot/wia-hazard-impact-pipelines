@@ -3,11 +3,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
+from datetime import date
 from pathlib import Path
 
 
 DEFAULT_ADMIN_PATH = Path("./data/cod-ab/global_admin_boundaries_matched_latest.gdb.zip")
+
+_VINTAGE_PATTERN = re.compile(r"^[A-Z]+[0-9]{4}-(0[1-9]|1[0-2])$")
+
+
+class AdminSourceManifestError(Exception):
+    """Raised when the admin-boundary sidecar provenance manifest is missing
+    or malformed. Distinct from FileNotFoundError/JSONDecodeError so a
+    caller can tell "the admin dataset itself is missing" apart from "the
+    admin dataset is present but its provenance manifest is not" -- the two
+    require different fixes.
+    """
 DEFAULT_WORLDPOP_DIR = Path("./data/population")
 DEFAULT_IBTRACS_DIR = Path("./data/cyclone")
 DEFAULT_HYDRORIVERS_PATH = Path("./data/HydroRIVERS_v10/HydroRIVERS_v10.gdb")
@@ -18,10 +31,110 @@ def _resolved(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def resolve_admin_path(admin_path: str | Path | None = None) -> Path:
-    """Resolve the common administrative-boundary asset without requiring it at parse time."""
+def find_admin_path_for_iso3(iso3: str, registry_dir: str | Path | None = None) -> Path | None:
+    """Look up a per-country COD-AB override registered under `registry_dir`
+    (default: DEFAULT_ADMIN_PATH's parent, i.e. ./data/cod-ab).
 
-    return _resolved(admin_path or DEFAULT_ADMIN_PATH)
+    Each subdirectory may hold its own `admin_source.json` sidecar with a
+    `"countries"` object keyed by ISO3 (see data/cod-ab/mli_sdn_moz_lbn/
+    admin_source.json for the reference shape); a match returns the sibling
+    `admin_boundaries.gpkg`. Returns None if no override is registered for
+    `iso3`, so callers fall back to DEFAULT_ADMIN_PATH.
+    """
+
+    iso3_norm = str(iso3).strip().upper()
+    base = _resolved(registry_dir or DEFAULT_ADMIN_PATH.parent)
+    if not base.is_dir():
+        return None
+    for manifest_path in sorted(base.glob("*/admin_source.json")):
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        countries = raw.get("countries") if isinstance(raw, dict) else None
+        if not isinstance(countries, dict) or iso3_norm not in countries:
+            continue
+        candidate = manifest_path.parent / "admin_boundaries.gpkg"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def resolve_admin_path(
+    admin_path: str | Path | None = None,
+    iso3: str | None = None,
+    registry_dir: str | Path | None = None,
+) -> Path:
+    """Resolve the administrative-boundary asset without requiring it at parse time.
+
+    An explicit `admin_path` always wins (unchanged behavior for every existing
+    caller). Otherwise, when `iso3` is given, a per-country COD-AB override
+    registered under `registry_dir` (see `find_admin_path_for_iso3`) takes
+    precedence over DEFAULT_ADMIN_PATH -- this is how MLI/SDN/MOZ/LBN pick up
+    their dedicated COD-AB download instead of the shared global asset.
+    """
+
+    if admin_path is not None:
+        return _resolved(admin_path)
+    if iso3:
+        override = find_admin_path_for_iso3(iso3, registry_dir=registry_dir)
+        if override is not None:
+            return override
+    return _resolved(DEFAULT_ADMIN_PATH)
+
+
+def admin_source_manifest_path(admin_path: str | Path) -> Path:
+    """Sidecar provenance manifest sibling to a resolved admin-boundary asset."""
+
+    return _resolved(admin_path).parent / "admin_source.json"
+
+
+def load_admin_source_manifest(admin_path: str | Path) -> dict[str, str]:
+    """Load and validate the admin_source.json sidecar next to `admin_path`.
+
+    Returns `{"authority": ..., "vintage": ..., "access_date": ...}`. Raises
+    AdminSourceManifestError (never a bare FileNotFoundError/JSONDecodeError)
+    if the manifest is missing, unparseable, or any field is missing or
+    invalid -- callers should let this propagate to fail a new run fast.
+    """
+
+    manifest_path = admin_source_manifest_path(admin_path)
+    if not manifest_path.exists():
+        raise AdminSourceManifestError(
+            f"Admin-boundary provenance manifest not found: {manifest_path}. "
+            "Create it with 'authority', 'vintage' (e.g. 'COD2026-06'), and "
+            "'access_date' (YYYY-MM-DD) fields before running against this admin dataset."
+        )
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise AdminSourceManifestError(f"Could not read/parse admin-boundary manifest {manifest_path}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise AdminSourceManifestError(f"Admin-boundary manifest {manifest_path} must contain a JSON object.")
+
+    authority = raw.get("authority")
+    if not isinstance(authority, str) or not authority.strip():
+        raise AdminSourceManifestError(f"Admin-boundary manifest {manifest_path} is missing a non-empty 'authority'.")
+
+    vintage = raw.get("vintage")
+    if not isinstance(vintage, str) or not _VINTAGE_PATTERN.match(vintage):
+        raise AdminSourceManifestError(
+            f"Admin-boundary manifest {manifest_path} has an invalid 'vintage' "
+            f"(got {vintage!r}); expected format '<AUTHORITY><YYYY-MM>', e.g. 'COD2026-06'."
+        )
+
+    access_date = raw.get("access_date")
+    if not isinstance(access_date, str):
+        raise AdminSourceManifestError(f"Admin-boundary manifest {manifest_path} is missing 'access_date'.")
+    try:
+        date.fromisoformat(access_date)
+    except ValueError as exc:
+        raise AdminSourceManifestError(
+            f"Admin-boundary manifest {manifest_path} has an invalid 'access_date' (got {access_date!r}): {exc}"
+        ) from exc
+
+    return {"authority": authority.strip(), "vintage": vintage, "access_date": access_date}
 
 
 def resolve_worldpop_path(

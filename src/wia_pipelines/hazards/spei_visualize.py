@@ -31,7 +31,7 @@ def write_run_maps(
         default_threshold_mask_tif,
         footprint_map,
         iso3=iso3,
-        hazard_label=f"water scarcity exposure (SPEI3 {default_threshold_label})",
+        hazard_label=f"water scarcity exposure (SPEI12 {default_threshold_label})",
         window_start=window_start,
         window_end=window_end,
         binary=True,

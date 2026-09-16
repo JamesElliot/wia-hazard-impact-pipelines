@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..config import RunConfig, build_run_paths, initialize_run_metadata, validate_run_metadata
+from .assets import checksum_path, load_admin_source_manifest
 from .io_paths import append_artifact, create_run_dirs, write_json
 
 
@@ -28,9 +29,9 @@ HAZARD_METHODS: dict[str, HazardMethod] = {
     ),
     "drought": HazardMethod(
         hazard="drought",
-        pipeline="water_scarcity_spei3",
-        method_version="0.1.0",
-        population_rule="WorldPop cells with SPEI3 at or below the reporting threshold in any month",
+        pipeline="water_scarcity_spei12",
+        method_version="0.2.0",
+        population_rule="WorldPop cells with SPEI12 at or below the reporting threshold in any month",
     ),
     "earthquake": HazardMethod(
         hazard="earthquake",
@@ -175,6 +176,38 @@ def record_artifact(
     notes: str = "",
 ) -> None:
     append_artifact(metadata, kind, Path(path), notes)
+
+
+def build_admin_source(
+    *,
+    admin_path: str | Path,
+    admin_level: int,
+    unit_count: int,
+    pcode_field: str,
+    checksum_cache_dir: str | Path | None = None,
+    asset_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the `admin_source` provenance block for run_metadata.json.
+
+    Raises `AdminSourceManifestError` (propagated from `load_admin_source_manifest`)
+    if the admin dataset's sidecar `admin_source.json` manifest is missing or
+    malformed -- callers should let this fail a run fast rather than catch it.
+    """
+
+    manifest = load_admin_source_manifest(admin_path)
+    block: dict[str, Any] = {
+        "authority": manifest["authority"],
+        "vintage": manifest["vintage"],
+        "access_date": manifest["access_date"],
+        "path": str(Path(admin_path).resolve()),
+        "sha256": checksum_path(admin_path, cache_dir=checksum_cache_dir),
+        "admin_level": int(admin_level),
+        "unit_count": int(unit_count),
+        "pcode_field": str(pcode_field),
+    }
+    if asset_id:
+        block["asset_id"] = asset_id
+    return block
 
 
 def standardize_admin_summary(

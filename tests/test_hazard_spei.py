@@ -100,7 +100,7 @@ class SpeiPipelineExecutionTests(unittest.TestCase):
             nc_path.parent.mkdir(parents=True, exist_ok=True)
             ds = xr.Dataset(
                 {
-                    "SPEI3": (
+                    "SPEI12": (
                         ("time", "lat", "lon"),
                         np.full((1, 7, 7), -2.0, dtype="float32"),
                     )
@@ -159,6 +159,89 @@ class SpeiPipelineExecutionTests(unittest.TestCase):
                 hashlib.sha256(worldpop_path.read_bytes()).hexdigest(),
             )
             self.assertEqual(metadata["inputs"]["admin"]["path"], str(admin_path.resolve()))
+            self.assertEqual(metadata["admin_source"]["vintage"], "TEST2026-01")
+            self.assertIn("water_scarcity_spei12", str(summary["outputs"]["admin_table"]))
+
+    def test_run_spei_pipeline_requests_accumulation_period_12(self) -> None:
+        # Mechanism-verification for the SPEI3->SPEI12 method change: proves
+        # the pipeline now requests/labels SPEI12 correctly. This cannot
+        # assert a real population-affected delta from synthetic data -- see
+        # the "Method change history" note in docs/methodology-alignment.md
+        # for the documented pilot-country comparison that satisfies the
+        # governance-required parity check.
+        import zipfile
+        from unittest.mock import patch
+
+        from rasterio.transform import from_origin
+        from shapely.geometry import box
+
+        import wia_pipelines.core.cds as core_cds
+        import wia_pipelines.hazards.coverage_checks as coverage_checks
+        from conftest import make_admin_gpkg, make_worldpop_tif
+        from wia_pipelines.hazards.spei import SpeiPipelineRunOptions, run_spei_pipeline
+
+        captured_requests: list[dict] = []
+
+        def fake_download_cds(dataset, request, out_zip):
+            captured_requests.append(request)
+            year = int(request["year"][0])
+            month = int(request["month"][0])
+            nc_path = out_zip.parent / f"{out_zip.stem}.nc"
+            nc_path.parent.mkdir(parents=True, exist_ok=True)
+            ds = xr.Dataset(
+                {
+                    "SPEI12": (
+                        ("time", "lat", "lon"),
+                        np.full((1, 7, 7), -2.0, dtype="float32"),
+                    )
+                },
+                coords={
+                    "time": [np.datetime64(f"{year:04d}-{month:02d}-15")],
+                    "lat": np.linspace(2.0, -1.0, 7),
+                    "lon": np.linspace(-1.0, 2.0, 7),
+                },
+            )
+            ds.to_netcdf(nc_path)
+            with zipfile.ZipFile(out_zip, "w") as zf:
+                zf.write(nc_path, arcname=nc_path.name)
+            return True, None
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            admin_path = make_admin_gpkg(
+                root / "admin.gpkg",
+                geometries=[box(0, 0, 1, 1)],
+                extra_columns={"iso3": ["AAA"], "adm_level": [2], "adm2_pcode": ["AAA001"]},
+                layer="admin2",
+            )
+            worldpop_path = make_worldpop_tif(
+                root / "worldpop.tif", shape=(10, 10), value=10.0, transform=from_origin(0, 1, 0.1, 0.1)
+            )
+
+            with (
+                patch.object(core_cds, "download_cds", side_effect=fake_download_cds),
+                patch.object(coverage_checks, "download_cds", side_effect=fake_download_cds),
+            ):
+                summary = run_spei_pipeline(
+                    SpeiPipelineRunOptions(
+                        inputs=self._spei_inputs(root),
+                        admin_path=admin_path,
+                        worldpop_path=worldpop_path,
+                        admin_layer="admin2",
+                        iso3_field="iso3",
+                    )
+                )
+
+            self.assertTrue(captured_requests)
+            for request in captured_requests:
+                self.assertEqual(request["accumulation_period"], ["12"])
+
+            import json as json_module
+
+            metadata = json_module.loads(Path(summary["metadata_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(metadata["pipeline"], "water_scarcity_spei12")
+            self.assertIn("water_scarcity_spei12", str(summary["outputs"]["admin_table"]))
+            self.assertNotIn("water_scarcity_spei3_", str(summary["outputs"]["admin_table"]))
 
     def _run_with_sample_lat_range(self, lat_max: float):
         # Shrinks the fake CDS sample's spatial extent so its bounding box only

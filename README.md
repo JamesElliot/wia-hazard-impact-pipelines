@@ -15,7 +15,7 @@ are examples and quality-control aids.
 |---|---|---|
 | Flood | Copernicus Global Flood Monitoring via EODC STAC | Population in pixels with more than the configured number of flooded days |
 | Extreme heat | Copernicus historical UTCI via CDS | Population in pixels exceeding a UTCI threshold for the configured consecutive-day period |
-| Drought | Copernicus SPEI3 via CDS | Population in pixels at or below a configured SPEI threshold in any month of the window |
+| Drought | Copernicus SPEI12 via CDS | Population in pixels at or below a configured SPEI threshold in any month of the window |
 | Hydrological drought | Copernicus GloFAS historical (EWDS) + HydroRIVERS | Population within a river-corridor buffer of a GloFAS reach with SRI3 at or below the reporting threshold, persisting at least 2 consecutive months |
 | Earthquake | USGS catalogue and ShakeMap | Population in pixels whose maximum shaking reaches MMI VI during the window |
 | Tropical cyclone | NOAA IBTrACS, with optional GDACS fallback | Population in observed 34-knot wind-radius swaths during the analysis window |

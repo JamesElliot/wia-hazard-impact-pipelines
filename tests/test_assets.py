@@ -2,9 +2,16 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from wia_pipelines.core.assets import (
+    AdminSourceManifestError,
+    admin_source_manifest_path,
     checksum_path,
+    find_admin_path_for_iso3,
     link_cached_asset,
+    load_admin_source_manifest,
+    resolve_admin_path,
     resolve_ibtracs_path,
     resolve_worldpop_path,
     shared_cache_root,
@@ -89,3 +96,112 @@ def test_checksum_path_cache_invalidates_on_content_and_mtime_change(tmp_path: P
 
     stored = json.loads((cache_dir / "checksum_cache.json").read_text(encoding="utf-8"))
     assert len(stored) == 2  # both (path, old size/mtime) and (path, new size/mtime) keys retained
+
+
+def test_admin_source_manifest_path_is_sibling_to_admin_dataset(tmp_path: Path):
+    admin_path = tmp_path / "cod-ab" / "admin.gdb.zip"
+    assert admin_source_manifest_path(admin_path) == tmp_path / "cod-ab" / "admin_source.json"
+
+
+def test_load_admin_source_manifest_missing_raises(tmp_path: Path):
+    admin_path = tmp_path / "admin.gdb.zip"
+    admin_path.write_bytes(b"placeholder")
+    with pytest.raises(AdminSourceManifestError):
+        load_admin_source_manifest(admin_path)
+
+
+def test_load_admin_source_manifest_malformed_json_raises(tmp_path: Path):
+    admin_path = tmp_path / "admin.gdb.zip"
+    admin_path.write_bytes(b"placeholder")
+    admin_source_manifest_path(admin_path).write_text("not json", encoding="utf-8")
+    with pytest.raises(AdminSourceManifestError):
+        load_admin_source_manifest(admin_path)
+
+
+def test_load_admin_source_manifest_bad_vintage_raises(tmp_path: Path):
+    admin_path = tmp_path / "admin.gdb.zip"
+    admin_path.write_bytes(b"placeholder")
+    admin_source_manifest_path(admin_path).write_text(
+        json.dumps({"authority": "COD", "vintage": "not-a-vintage", "access_date": "2026-06-14"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(AdminSourceManifestError):
+        load_admin_source_manifest(admin_path)
+
+
+def test_load_admin_source_manifest_bad_access_date_raises(tmp_path: Path):
+    admin_path = tmp_path / "admin.gdb.zip"
+    admin_path.write_bytes(b"placeholder")
+    admin_source_manifest_path(admin_path).write_text(
+        json.dumps({"authority": "COD", "vintage": "COD2026-06", "access_date": "not-a-date"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(AdminSourceManifestError):
+        load_admin_source_manifest(admin_path)
+
+
+def test_load_admin_source_manifest_valid_returns_fields(tmp_path: Path):
+    admin_path = tmp_path / "admin.gdb.zip"
+    admin_path.write_bytes(b"placeholder")
+    admin_source_manifest_path(admin_path).write_text(
+        json.dumps({"authority": "COD", "vintage": "COD2026-06", "access_date": "2026-06-14"}),
+        encoding="utf-8",
+    )
+    manifest = load_admin_source_manifest(admin_path)
+    assert manifest == {"authority": "COD", "vintage": "COD2026-06", "access_date": "2026-06-14"}
+
+
+
+def test_find_admin_path_for_iso3_matches_registered_country(tmp_path: Path):
+    registry = tmp_path / "cod-ab"
+    override_dir = registry / "mli_sdn_moz_lbn"
+    override_dir.mkdir(parents=True)
+    (override_dir / "admin_boundaries.gpkg").write_bytes(b"placeholder")
+    (override_dir / "admin_source.json").write_text(
+        json.dumps(
+            {
+                "authority": "COD",
+                "vintage": "COD2026-07",
+                "access_date": "2026-07-29",
+                "countries": {"MLI": {}, "SDN": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert find_admin_path_for_iso3("MLI", registry_dir=registry) == override_dir / "admin_boundaries.gpkg"
+    assert find_admin_path_for_iso3("mli", registry_dir=registry) == override_dir / "admin_boundaries.gpkg"
+    assert find_admin_path_for_iso3("AFG", registry_dir=registry) is None
+
+
+def test_find_admin_path_for_iso3_ignores_dataset_missing_from_disk(tmp_path: Path):
+    registry = tmp_path / "cod-ab"
+    override_dir = registry / "mli_sdn_moz_lbn"
+    override_dir.mkdir(parents=True)
+    (override_dir / "admin_source.json").write_text(
+        json.dumps({"authority": "COD", "vintage": "COD2026-07", "access_date": "2026-07-29", "countries": {"MLI": {}}}),
+        encoding="utf-8",
+    )
+    # admin_boundaries.gpkg deliberately not created.
+    assert find_admin_path_for_iso3("MLI", registry_dir=registry) is None
+
+
+def test_resolve_admin_path_explicit_path_wins_over_iso3_override(tmp_path: Path):
+    registry = tmp_path / "cod-ab"
+    override_dir = registry / "mli_sdn_moz_lbn"
+    override_dir.mkdir(parents=True)
+    (override_dir / "admin_boundaries.gpkg").write_bytes(b"placeholder")
+    (override_dir / "admin_source.json").write_text(
+        json.dumps({"authority": "COD", "vintage": "COD2026-07", "access_date": "2026-07-29", "countries": {"MLI": {}}}),
+        encoding="utf-8",
+    )
+    explicit = tmp_path / "explicit.gdb.zip"
+    resolved = resolve_admin_path(explicit, iso3="MLI", registry_dir=registry)
+    assert resolved == explicit.expanduser().resolve()
+
+
+def test_resolve_admin_path_falls_back_to_default_without_override(tmp_path: Path):
+    registry = tmp_path / "cod-ab"
+    registry.mkdir()
+    resolved = resolve_admin_path(None, iso3="AFG", registry_dir=registry)
+    assert resolved.name == "global_admin_boundaries_matched_latest.gdb.zip"

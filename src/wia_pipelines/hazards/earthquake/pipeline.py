@@ -24,7 +24,7 @@ from ...core.admin import build_admin_aoi
 from ...core.aggregation import labelled_sum
 from ...core.assets import checksum_path, link_cached_asset, shared_cache_root, url_cache_key
 from ...core.io_paths import append_artifact
-from ...core.pipeline import build_hazard_run_context, standardize_admin_summary
+from ...core.pipeline import build_admin_source, build_hazard_run_context, standardize_admin_summary
 from ...core.raster_ops import reproject_array_to_grid, write_array_geotiff
 from .._admin_config import load_yaml_hazard_admin
 from ._version import __version__
@@ -388,6 +388,13 @@ def run_pipeline(inputs: RunInputs) -> Path:
         dtype="int32",
         all_touched=all_touched_admin,
     )
+    admin_source = build_admin_source(
+        admin_path=inputs.admin,
+        admin_level=level,
+        unit_count=n_admin,
+        pcode_field=pcode_field,
+        checksum_cache_dir=checksum_cache_dir,
+    )
     pop_total_by_id = labelled_sum(admin_id, population, n_labels=n_admin, valid_mask=population_valid)
     affected_by_id = {
         threshold: labelled_sum(admin_id, exposure_arrays[threshold], n_labels=n_admin)
@@ -450,7 +457,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
         pct_affected_column="pct_affected",
     )
 
-    table_path = layout["tables"] / f"HIEQ_{run.iso3}_{end_label}.csv"
+    table_path = layout["tables"] / f"HIEQ_{run.iso3}_{admin_source['vintage']}_{end_label}.csv"
     event_path = layout["qc"] / f"HIEQ_{run.iso3}_events_{end_label}.csv"
     table.to_csv(table_path, index=False, float_format="%.6f")
     pd.DataFrame(event_rows).to_csv(event_path, index=False)
@@ -475,6 +482,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
     metadata = ctx["metadata"]  # already carries run_config/paths/pipeline/method_version/population_rule
     metadata.update(
         {
+            "admin_source": admin_source,
             "indicator": "HI-EQ",
             "pipeline_version": __version__,
             "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
