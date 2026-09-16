@@ -451,7 +451,11 @@ def run_violence_pipeline(
     # is given an explicit float64 accumulator so precision isn't lost even
     # though the arrays themselves stay float32.
     if wp_nodata is not None:
-        wp_arr = np.where(wp_arr == wp_nodata, np.float32(0.0), wp_arr).astype("float32")
+        # In-place instead of np.where(...): np.where would allocate a full
+        # extra whole-country float32 copy just to zero out nodata, which is
+        # exactly the kind of transient large-country memory spike described
+        # in the wp_arr load comment above.
+        wp_arr[wp_arr == wp_nodata] = np.float32(0.0)
     affected_pop = (wp_arr * mask).astype("float32")
     pop_weighted_count = (wp_arr * event_count.astype("float32")).astype("float32")
     out_profile = wp_profile.copy()
@@ -497,10 +501,26 @@ def run_violence_pipeline(
         "pop_weighted_mean_event_count": pop_weighted_mean_event_count,
     }
 
+    # QC figures 2/3 render into a 6x6in PNG at dpi=150 (~900x900 output
+    # pixels), so feeding them a whole-country 100m array (COD is ~23000x
+    # 22600 = ~520M pixels) is pure waste: imshow's colormap/normalize step
+    # materializes an RGBA buffer at input resolution before downsampling for
+    # display, and `np.where(mask == 1, 1, np.nan)` alone promotes a full-size
+    # uint8 mask to a full-size float64 array (~4GB for COD). Together these
+    # were the actual source of the large-country OOM (not the analysis
+    # arrays below, which stay at native resolution). A simple stride
+    # subsample keeps the QC preview visually identical while cutting this
+    # plotting-only working set by ~100-200x; zonal stats never see these
+    # decimated copies.
+    plot_max_dim = 1500
+    plot_step = max(1, max(mask.shape) // plot_max_dim)
+    mask_plot = mask[::plot_step, ::plot_step]
+    wp_plot = wp_arr[::plot_step, ::plot_step]
+
     # QC figure 2: binary mask
     extent = (wp_bounds.left, wp_bounds.right, wp_bounds.bottom, wp_bounds.top)
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(mask, interpolation="nearest", extent=extent, origin="upper")
+    ax.imshow(mask_plot, interpolation="nearest", extent=extent, origin="upper")
     admin_units.boundary.plot(ax=ax, linewidth=0.5, edgecolor="black", alpha=0.8)
     ax.set_title(f"{config.iso3} violence mask (>= {int(mask_threshold_events)} events)")
     ax.set_xlabel("Longitude")
@@ -511,14 +531,10 @@ def run_violence_pipeline(
     _add_artifact("qc_mask", qc_mask_png, "Binary violence mask")
 
     # QC figure 3: mask on WorldPop
-    # No defensive copy of wp_arr here (PERF/MEM): imshow only reads its input,
-    # and a full-array copy of the whole-country WorldPop raster was enough
-    # extra peak memory to get this step OOM-killed on memory-constrained
-    # hosts for large countries (observed reproducibly for MLI at admin2).
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(wp_arr, interpolation="nearest", extent=extent, origin="upper")
+    ax.imshow(wp_plot, interpolation="nearest", extent=extent, origin="upper")
     ax.imshow(
-        np.where(mask == 1, 1, np.nan), interpolation="nearest", extent=extent, origin="upper", alpha=0.35
+        np.where(mask_plot == 1, 1, np.nan), interpolation="nearest", extent=extent, origin="upper", alpha=0.35
     )
     admin_units.boundary.plot(ax=ax, linewidth=0.5, edgecolor="black", alpha=0.8)
     ax.set_title(f"{config.iso3} violence mask on WorldPop")
@@ -528,6 +544,7 @@ def run_violence_pipeline(
     fig.savefig(qc_mask_worldpop_png, dpi=150)
     plt.close(fig)
     _add_artifact("qc_mask_worldpop", qc_mask_worldpop_png, "Violence mask overlay on WorldPop")
+    del mask_plot, wp_plot
 
     # Admin zonal stats.
     # PERF-006: rasterize admin polygons once (each pixel labelled 1..n_admin)
