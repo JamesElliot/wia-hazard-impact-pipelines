@@ -1,0 +1,17 @@
+# MOZ admin2 field mapping for the cyclone/earthquake YAML-config pipelines.
+# MOZ resolves (via data/cod-ab/mli_sdn_moz_lbn/admin_source.json) to the
+# per-country COD-AB override admin_boundaries.gpkg, not the global matched
+# archive, so the shared default.yml's uppercase HDX-style field names
+# (ADM2_PCODE, ADM2_EN, ADM2_REF) don't exist on this source and
+# load_yaml_hazard_admin raises "Admin input is missing configured admin-2
+# key: ADM2_PCODE". This file fills in the lowercase field names against
+# that gpkg's actual admin2 schema; adm2_ref_name is empty for MOZ so
+# adm2_name is used for both the English and local name fields.
+admin:
+  fields:
+    adm0_pcode: adm0_pcode
+    adm1_pcode: adm1_pcode
+    adm2_pcode: adm2_pcode
+    adm2_name_en: adm2_name
+    adm2_name_local: adm2_name
+    iso3: iso3
