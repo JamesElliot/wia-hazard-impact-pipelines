@@ -101,6 +101,8 @@ least once. Pixels outside the country are stored as nodata rather than zero.
 
 Each run writes a standardized run directory containing raster products,
 administrative summary tables, QC artifacts, logs, and `run_metadata.json`.
+`run_metadata.json` records each input dataset (version, access date, DOI, licence, attribution) in
+`data_sources`; see [output-contract.md](docs/output-contract.md#input-dataset-provenance-data_sources).
 See:
 
 - [`docs/output-contract.md`](docs/output-contract.md)

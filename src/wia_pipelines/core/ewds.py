@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .data_sources import write_retrieval_record
+
 
 def _require(name: str):
     import importlib
@@ -87,6 +89,7 @@ def download_ewds(
         client = cdsapi.Client(url=resolved_url, key=resolved_key)
         result = client.retrieve(dataset, request)
         result.download(target=str(out_zip))
+        write_retrieval_record(out_zip, source=dataset)
         return True, None
     except Exception as exc:  # pragma: no cover - network/auth failures are runtime dependent
         return False, str(exc)

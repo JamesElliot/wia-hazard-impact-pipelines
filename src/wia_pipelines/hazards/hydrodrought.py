@@ -19,6 +19,13 @@ from ..core.admin import (
     resolve_admin_pcode_column,
 )
 from ..core.assets import checksum_path, shared_cache_root
+from ..core.data_sources import (
+    add_cds_data_source,
+    add_data_source,
+    add_population_and_admin_sources,
+    hydrorivers_data_source,
+    run_period,
+)
 from ..core.cds import months_for_last_n
 from ..core.pipeline import (
     build_admin_source,
@@ -916,6 +923,38 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
     # PROD-001: terminal marker so a *future* run can tell this one genuinely
     # finished (vs. the run_metadata.json build_hazard_run_context already
     # wrote at the very start of this run, before any real computation).
+    glofas_rows = pd.concat([pd.read_csv(baseline_manifest), pd.read_csv(window_manifest)])
+    glofas_ok = glofas_rows[glofas_rows["ok"].astype(bool)]
+    add_cds_data_source(
+        metadata,
+        "glofas_historical",
+        [Path(str(p)) for p in glofas_ok["path"]],
+        version="version_4_0",
+        period=run_period(config),
+        area={"iso3": iso3, "bbox_nwse": cds_area},
+        selection={
+            "hydrological_model": "lisflood",
+            "timespan": "time_mean",
+            "variable": "average_river_discharge_in_the_last_24_hours",
+            "product_types_downloaded": sorted(str(t) for t in glofas_ok["product_type"].dropna().unique()),
+            "baseline_years": [int(options.baseline_start_year), int(options.baseline_end_year)],
+            "accumulation_months": int(accumulation_months),
+            "thresholds": {k: float(v) for k, v in thresholds.items()},
+        },
+    )
+    add_data_source(
+        metadata,
+        hydrorivers_data_source(
+            options.hydrorivers_path,
+            sha256=checksum_path(options.hydrorivers_path, cache_dir=checksum_cache_dir),
+        ),
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=iso3,
+        worldpop_path=options.worldpop_path,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+    )
     metadata["status"] = "SUCCESS"
     _sync_metadata()
 

@@ -14,6 +14,14 @@ from ..core.admin import (
 )
 from ..core.aggregation import labelled_sum
 from ..core.assets import checksum_path, load_admin_source_manifest, shared_cache_root
+from ..core.data_sources import (
+    acled_access_date_from_name,
+    add_data_source,
+    add_population_and_admin_sources,
+    build_data_source,
+    read_retrieval_date,
+    run_period,
+)
 from ..core.pipeline import (
     build_admin_source,
     build_hazard_run_context,
@@ -122,6 +130,7 @@ def run_violence_pipeline(
     mask_threshold_events: int = 1,
     all_touched: bool = True,
     skip_if_complete: bool = False,
+    acled_access_date: str | None = None,
 ) -> dict[str, Any]:
     import warnings
 
@@ -662,6 +671,35 @@ def run_violence_pipeline(
     # PROD-001: terminal marker so a *future* run can tell this one genuinely
     # finished (vs. the run_metadata.json build_hazard_run_context already
     # wrote at the very start of this run, before any real computation).
+    # ACLED access date: explicit option, else a retrieval record next to the file, else the date
+    # in an ACLED export file name ("ACLED Data_YYYY-MM-DD..."), else unknown (null + warning).
+    acled_date = (
+        acled_access_date or read_retrieval_date(acled_path) or acled_access_date_from_name(acled_path)
+    )
+    add_data_source(
+        metadata,
+        build_data_source(
+            "acled",
+            access_date=acled_date,
+            period=run_period(config),
+            area=config.iso3,
+            selection={
+                "included_event_types": selected_types,
+                "rows_loaded": int(len(raw_df)),
+                "rows_after_filter": int(len(df)),
+                "buffer_rule": "acled_buffer_km(event_type, fatalities)",
+                "mask_threshold_events": int(mask_threshold_events),
+                "file_name": Path(acled_path).name,
+            },
+            sha256=checksum_path(acled_path, cache_dir=checksum_cache_dir),
+        ),
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=config.iso3,
+        worldpop_path=worldpop_path,
+        worldpop_sha256=metadata["inputs"]["worldpop_sha256"],
+    )
     metadata["status"] = "SUCCESS"
     _write_metadata()
     outputs = {

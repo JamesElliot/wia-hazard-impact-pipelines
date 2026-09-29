@@ -4,6 +4,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
+from .data_sources import write_retrieval_record
+
 
 def _require(name: str):
     import importlib
@@ -26,6 +28,8 @@ def download_cds(dataset: str, request: dict[str, Any], out_zip: Path) -> tuple[
         client = cdsapi.Client()
         result = client.retrieve(dataset, request)
         result.download(target=str(out_zip))
+        # Retrieval date for run_metadata data_sources; a cached zip keeps its original date.
+        write_retrieval_record(out_zip, source=dataset)
         return True, None
     except Exception as exc:  # pragma: no cover - network/auth failures are runtime dependent
         return False, str(exc)

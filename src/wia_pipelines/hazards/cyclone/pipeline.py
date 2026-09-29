@@ -18,6 +18,13 @@ from shapely.ops import unary_union
 
 from ...config import RunConfig, validate_run_metadata
 from ...core.assets import checksum_path, link_cached_asset, shared_cache_root
+from ...core.data_sources import (
+    add_data_source,
+    add_population_and_admin_sources,
+    build_data_source,
+    ibtracs_facts,
+    read_retrieval_date,
+)
 from ...core.io_paths import append_artifact
 from ...core.pipeline import build_admin_source, build_hazard_run_context, standardize_admin_summary
 from .._admin_config import load_yaml_hazard_admin
@@ -52,6 +59,7 @@ class RunInputs:
     gdacs_footprints: Path | None = None
     gdacs_auto: bool = False
     refresh_cache: bool = False
+    ibtracs_access_date: str | None = None  # IBTrACS download date; else a retrieval record, else null
 
 
 def _configured(inputs: RunInputs) -> dict[str, Any]:
@@ -564,6 +572,49 @@ def _manifest(
                 "pyproj": pyproj.__version__,
             },
         }
+    )
+    ibtracs = ibtracs_facts(inputs.ibtracs)
+    add_data_source(
+        metadata,
+        build_data_source(
+            "ibtracs",
+            version=ibtracs["version"],
+            access_date=inputs.ibtracs_access_date or read_retrieval_date(inputs.ibtracs),
+            period={"start": metadata["window"]["start"], "end": metadata["window"]["end"]},
+            area=inputs.iso3.upper(),
+            selection={
+                "subset": ibtracs["subset"],
+                "file_name": Path(inputs.ibtracs).name,
+                "footprint": "observed quadrant wind radii",
+            },
+            sha256=metadata["inputs"]["ibtracs"]["sha256"],
+        ),
+    )
+    if gdacs_path:
+        gdacs_supplied = inputs.gdacs_footprints is not None
+        add_data_source(
+            metadata,
+            build_data_source(
+                "gdacs",
+                # A fresh fetch has today as its retrieval date; a cached or supplied file has
+                # no retrieval record here, so its date stays unknown.
+                access_date=datetime.now(timezone.utc).date().isoformat()
+                if gdacs_cache_source == "download"
+                else (read_retrieval_date(inputs.gdacs_footprints) if gdacs_supplied else None),
+                period={"start": metadata["window"]["start"], "end": metadata["window"]["end"]},
+                area=inputs.iso3.upper(),
+                selection={
+                    "origin": "supplied file" if gdacs_supplied else f"auto fallback ({gdacs_cache_source})",
+                    "used_only_where_ibtracs_radii_incomplete": True,
+                },
+                sha256=metadata["inputs"]["gdacs_footprints"]["sha256"],
+            ),
+        )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=inputs.iso3,
+        worldpop_path=inputs.worldpop,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
     )
     for kind, path in (artifact_paths or {}).items():
         append_artifact(metadata, kind, Path(path))

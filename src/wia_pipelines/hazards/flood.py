@@ -3,11 +3,13 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ..config import RunConfig
 from ..core.assets import checksum_path, shared_cache_root
+from ..core.data_sources import add_data_source, add_population_and_admin_sources, build_data_source
 from ..core.pipeline import (
     build_admin_source,
     build_hazard_run_context,
@@ -271,6 +273,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         metadata["warnings"].append({"stage": "preflight_coverage", "message": warn_msg})
 
     items = []
+    stac_access_date: str | None = None  # set only when this run actually queried the STAC API
     item_ids: list[str] = []
     failures: list[dict[str, str]] = []
     success = 0
@@ -317,6 +320,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             },
         )
         items = [it for it in search.items() if options.asset_key in it.assets and it.bbox is not None]
+        stac_access_date = datetime.now(timezone.utc).date().isoformat()
         if not items:
             raise RuntimeError(
                 f"No STAC items found for {iso3} with asset {options.asset_key} in {datetime_range}"
@@ -670,6 +674,31 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     # PROD-001: terminal marker so a *future* run can tell this one genuinely
     # finished (vs. the run_metadata.json build_hazard_run_context already
     # wrote at the very start of this run, before any real computation).
+    range_start, _, range_end = datetime_range.partition("/")
+    add_data_source(
+        metadata,
+        build_data_source(
+            "gfm",
+            catalogue_id=options.collection_id,
+            url=f"{options.stac_api_url}/collections/{options.collection_id}",
+            access_date=stac_access_date,
+            period={"start": range_start[:10], "end": (range_end or range_start)[:10]},
+            area={"iso3": iso3},
+            selection={
+                "asset": options.asset_key,
+                "stac_api": options.stac_api_url,
+                "items": int(len(items)),
+                "reused_existing_flood_days_raster": bool(reused_existing_flood_days),
+                "flood_binary_threshold_days": int(options.flood_binary_threshold_days),
+            },
+        ),
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=iso3,
+        worldpop_path=options.worldpop_path,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+    )
     metadata["status"] = "SUCCESS"
     _sync()
 

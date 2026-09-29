@@ -19,6 +19,7 @@ from ..core.admin import (
 )
 from ..core.assets import checksum_path, shared_cache_root
 from ..core.cds import months_for_last_n
+from ..core.data_sources import add_cds_data_source, add_population_and_admin_sources, run_period
 from ..core.pipeline import (
     build_admin_source,
     build_hazard_run_context,
@@ -722,6 +723,26 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
     # PROD-001: terminal marker so a *future* run can tell this one genuinely
     # finished (vs. the run_metadata.json build_hazard_run_context already
     # wrote at the very start of this run, before any real computation).
+    add_cds_data_source(
+        metadata,
+        "era5_drought_spei",
+        [Path(str(p)) for p in chosen["path"]],
+        version="1_0",
+        period=run_period(config),
+        area={"iso3": config.iso3, "bbox_nwse": cds_area},
+        selection={
+            "variable": "standardised_precipitation_evapotranspiration_index",
+            "accumulation_period_months": 12,
+            "dataset_types": sorted(str(t) for t in chosen["dataset_type"].unique()),
+            "thresholds": {k: float(v) for k, v in thresholds.items()},
+        },
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=config.iso3,
+        worldpop_path=options.worldpop_path,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+    )
     metadata["status"] = "SUCCESS"
     _sync_metadata()
 
