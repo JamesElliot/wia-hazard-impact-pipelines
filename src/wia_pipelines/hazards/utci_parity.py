@@ -139,7 +139,8 @@ def run_checks(run_dir: Path) -> dict[str, Any]:
             CheckResult("qc_admin_json_exists", "WARN", str(qc_json) if qc_json else "not recorded")
         )
 
-    mask_summary = (metadata.get("extreme_heat_masks") or {}).get("results_summary") or {}
+    extreme = admin_table.get("extreme") or "heat"
+    mask_summary = (metadata.get(f"extreme_{extreme}_masks") or {}).get("results_summary") or {}
     for key in thresholds.keys():
         pop_col = f"pop_exposed_{key}"
         pct_col = f"pct_exposed_{key}"
@@ -200,7 +201,12 @@ def run_checks(run_dir: Path) -> dict[str, Any]:
                 )
 
     # Absolute-threshold monotonicity if all are present.
-    abs_keys = [k for k in ("abs_32c", "abs_38c", "abs_46c") if f"pop_exposed_{k}" in df.columns]
+    # Ordered mild -> severe: heat ascending thresholds, cold descending.
+    abs_keys = sorted(
+        (k for k in thresholds if f"pop_exposed_{k}" in df.columns),
+        key=lambda k: float(thresholds[k]),
+        reverse=(extreme == "cold"),
+    )
     for i in range(len(abs_keys) - 1):
         a = abs_keys[i]
         b = abs_keys[i + 1]

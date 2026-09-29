@@ -14,6 +14,7 @@ from ..core.pipeline import (
     build_admin_source,
     build_hazard_run_context,
     record_artifact,
+    hazard_method,
     standardize_admin_summary,
     sync_run_metadata,
 )
@@ -21,6 +22,12 @@ from ..core.progress import make_progress_writer
 from .coverage_checks import check_worldpop_coverage, evaluate_coverage_gate, run_cds_single_month_check
 from .coverage_requests import utci_sample_request
 from .utci_visualize import write_run_maps
+
+
+EXTREMES = ("heat", "cold")
+HEAT_DEFAULT_THRESHOLDS_C = (32.0, 38.0, 46.0)
+# UTCI cold-stress categories: strong (< -13), very strong (< -27), extreme (< -40) C.
+COLD_DEFAULT_THRESHOLDS_C = (-13.0, -27.0, -40.0)
 
 
 @dataclass(frozen=True)
@@ -31,10 +38,15 @@ class UtciRunInputs:
     output_root: Path = Path("./outputs")
     target_adm_level: int = 2
     buffer_km: float = 0.0
+    extreme: str = "heat"  # "heat" (daily max UTCI above threshold) or "cold" (daily min UTCI below)
+
+    def __post_init__(self) -> None:
+        if self.extreme not in EXTREMES:
+            raise ValueError(f"extreme must be one of {EXTREMES}, got '{self.extreme}'.")
 
     def to_run_config(self) -> RunConfig:
         return RunConfig(
-            hazard="heat",
+            hazard=self.extreme,
             iso3=self.iso3,
             as_of_date=self.as_of_date,
             lookback_months=self.lookback_months,
@@ -64,7 +76,7 @@ class UtciPipelineRunOptions:
     admin_layer: str = "admin2"
     iso3_field: str = "iso3"
     cds_buffer_deg: float = 0.25
-    abs_thresholds_c: tuple[float, ...] = (32.0, 38.0, 46.0)
+    abs_thresholds_c: tuple[float, ...] = HEAT_DEFAULT_THRESHOLDS_C
     default_reporting_threshold_c: float = 32.0
     k_consecutive_days: int = 3
     require_full_preflight_coverage: bool = True
@@ -81,17 +93,38 @@ def _append_artifact(metadata: dict[str, Any], kind: str, path: Path, note: str 
     record_artifact(metadata, kind, path, note)
 
 
+def _threshold_key(extreme: str, threshold_c: float) -> str:
+    """Column/key label for a threshold: heat ``abs_38c``; cold ``cold_m13c`` (m = minus)."""
+    t = int(threshold_c)
+    if extreme == "cold":
+        return f"cold_{'m' if t < 0 else ''}{abs(t)}c"
+    return f"abs_{t}c"
+
+
+def _exceeds_threshold(utci, threshold_c: float, extreme: str):
+    """Strict comparison; NaN (missing) compares False in both directions."""
+    return utci < threshold_c if extreme == "cold" else utci > threshold_c
+
+
 def _find_daily_max_utci(ds):
-    # Prefer explicit max-like variable names.
+    return _find_daily_stat_utci(ds, "max")
+
+
+def _find_daily_stat_utci(ds, stat: str):
+    """Select the daily ``max`` or ``min`` UTCI variable (CDS ships both: utci_daily_max/min)."""
+    if stat not in ("max", "min"):
+        raise ValueError(f"stat must be 'max' or 'min', got '{stat}'.")
+    stat_words = ("maximum", "max") if stat == "max" else ("minimum", "min")
+    # Prefer explicit stat-like variable names.
     vars_lower = {v.lower(): v for v in ds.data_vars}
     candidates = [vars_lower[k] for k in vars_lower if "utci" in k]
     if not candidates:
         candidates = [v for v in ds.data_vars if v.lower() != "crs"]
     if not candidates:
         raise ValueError(f"No data variable found in UTCI dataset: vars={list(ds.data_vars)}")
-    max_like = [v for v in candidates if "max" in v.lower() or "maximum" in v.lower()]
-    if max_like:
-        return ds[sorted(max_like, key=len)[0]]
+    stat_like = [v for v in candidates if any(w in v.lower() for w in stat_words)]
+    if stat_like:
+        return ds[sorted(stat_like, key=len)[0]]
 
     base_var = sorted(candidates, key=len)[0]
     da = ds[base_var]
@@ -99,7 +132,7 @@ def _find_daily_max_utci(ds):
     if stat_dims:
         sd = stat_dims[0]
         coord_vals = da[sd].astype(str).values.tolist()
-        matches = [i for i, s in enumerate(coord_vals) if "max" in str(s).lower()]
+        matches = [i for i, s in enumerate(coord_vals) if any(w in str(s).lower() for w in stat_words)]
         if matches:
             return da.isel({sd: matches[0]}).drop_vars(sd, errors="ignore")
     return da
@@ -150,7 +183,13 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     from ..core.raster_ops import reproject_array_to_grid, write_array_geotiff
 
     inputs = options.inputs
+    extreme = inputs.extreme
     iso3 = inputs.iso3.upper()
+    if extreme == "cold" and tuple(options.abs_thresholds_c) == HEAT_DEFAULT_THRESHOLDS_C:
+        raise ValueError(
+            "extreme='cold' needs explicit cold thresholds (e.g. COLD_DEFAULT_THRESHOLDS_C with "
+            "default_reporting_threshold_c=-13.0); the heat defaults were left in place."
+        )
     if not options.admin_path.exists():
         raise FileNotFoundError(f"Admin boundaries not found: {options.admin_path}")
     if not options.worldpop_path.exists():
@@ -290,6 +329,8 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     manifest: list[dict[str, Any]] = []
     download_writer = make_progress_writer(dl_status, "utci_recent_download", len(months))
 
+    # Cold shares the heat cache: the CDS daily-statistics request is identical and each
+    # NetCDF carries both utci_daily_max and utci_daily_min.
     cache_dir = Path(config.output_root).resolve() / "_cache" / "heat" / iso3 / "cds_raw"
     extract_dir = cache_dir / "extracted"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -365,7 +406,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         "progress_status_path": str(dl_status),
     }
 
-    # Build daily UTCI max stack.
+    # Build daily UTCI stack (max for heat, min for cold).
     das = []
     for p in nc_paths:
         ds = xr.open_dataset(p, decode_times=True, engine="netcdf4")
@@ -376,7 +417,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
             rename["longitude"] = "lon"
         if rename:
             ds = ds.rename(rename)
-        da = _find_daily_max_utci(ds)
+        da = _find_daily_stat_utci(ds, "min" if extreme == "cold" else "max")
         if "latitude" in da.dims:
             da = da.rename({"latitude": "lat"})
         if "longitude" in da.dims:
@@ -396,8 +437,8 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         raise RuntimeError("No UTCI timesteps remain after filtering to requested window.")
 
     # Build thresholds.
-    thresholds = {f"abs_{int(t)}c": float(t) for t in options.abs_thresholds_c}
-    default_threshold_key = f"abs_{int(options.default_reporting_threshold_c)}c"
+    thresholds = {_threshold_key(extreme, t): float(t) for t in options.abs_thresholds_c}
+    default_threshold_key = _threshold_key(extreme, options.default_reporting_threshold_c)
     if default_threshold_key not in thresholds:
         raise ValueError(
             "default_reporting_threshold_c must be present in abs_thresholds_c; "
@@ -421,7 +462,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     # pop_affected GeoTIFF straight back off disk.
     pop_affected_arrays: dict[str, np.ndarray] = {}
     for i, (thr_name, thr_val) in enumerate(thresholds.items(), start=1):
-        exceed = (utci > float(thr_val)).fillna(False)
+        exceed = _exceeds_threshold(utci, float(thr_val), extreme).fillna(False)
         consec_mask = _consecutive_k_exceedance(exceed, k=k)
         src_mask = consec_mask.values.astype("uint8")
         src_transform = _transform_from_latlon_centers(consec_mask["lat"].values, consec_mask["lon"].values)
@@ -517,9 +558,11 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         pct_affected_column=f"pct_exposed_{default_threshold_key}",
     )
     vintage = metadata["admin_source"]["vintage"]
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_extreme_heat_{config.as_of_date}.csv"
+    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_extreme_{extreme}_{config.as_of_date}.csv"
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
-    _append_artifact(metadata, "admin_heat_table", out_csv, f"{admin_label.title()} UTCI exposure table")
+    _append_artifact(
+        metadata, f"admin_{extreme}_table", out_csv, f"{admin_label.title()} UTCI {extreme} exposure table"
+    )
 
     map_paths = write_run_maps(
         admin_gdf,
@@ -532,9 +575,10 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         default_threshold_label=default_threshold_key,
         window_start=config.window_start.isoformat(),
         window_end=config.window_end.isoformat(),
+        extreme=extreme,
     )
     for kind, path in map_paths.items():
-        _append_artifact(metadata, kind, path, f"{admin_label.title()} extreme heat indicator map")
+        _append_artifact(metadata, kind, path, f"{admin_label.title()} extreme {extreme} indicator map")
 
     # Minimal QC JSON for parity.
     qc_json = (
@@ -555,14 +599,15 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
     _write_json(qc_json, qc_payload)
     _append_artifact(metadata, "qc_admin_table_json", qc_json, "UTCI QC summary JSON")
 
-    metadata["pipeline"] = "extreme_heat_utci"
+    metadata["pipeline"] = hazard_method(extreme).pipeline
     metadata["aoi"] = {
         "country_bounds_4326": {"west": west, "south": south, "east": east, "north": north},
         "cds_bbox_nwse": cds_bbox,
         "cds_buffer_deg": float(options.cds_buffer_deg),
         "bounds_hash": bounds_hash,
     }
-    metadata["extreme_heat_masks"] = {
+    metadata[f"extreme_{extreme}_masks"] = {
+        "extreme": extreme,
         "k_consecutive_days": int(k),
         "thresholds_c": thresholds,
         "default_reporting_threshold_key": default_threshold_key,
@@ -577,6 +622,7 @@ def run_utci_pipeline(options: UtciPipelineRunOptions) -> dict[str, Any]:
         f"n_{admin_label}": int(len(out)),
         "thresholds": thresholds,
         "k_consecutive_days": int(k),
+        "extreme": extreme,
     }
     metadata["qc_report"] = {"path": str(qc_json)}
     # PROD-001: terminal marker so a *future* run can tell this one genuinely

@@ -21,6 +21,7 @@ from wia_pipelines.hazards.hydrodrought import PERSISTENCE_MONTHS
 
 def test_method_registry_covers_every_supported_hazard():
     assert set(HAZARD_METHODS) == {
+        "cold",
         "cyclone",
         "drought",
         "earthquake",

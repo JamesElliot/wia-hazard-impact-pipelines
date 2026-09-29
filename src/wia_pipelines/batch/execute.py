@@ -10,7 +10,11 @@ from typing import Any
 import pandas as pd
 
 
-PIPELINES = ("spei", "utci", "flood", "violence", "hydrodrought")
+PIPELINES = ("spei", "utci", "utci_cold", "flood", "violence", "hydrodrought")
+
+# utci_cold shares the UTCI readiness and preflight checks (same CDS dataset, same WorldPop and
+# admin inputs), so its eligibility columns are the utci ones.
+_ELIGIBILITY_PIPELINE = {"utci_cold": "utci"}
 
 
 def _now_utc() -> str:
@@ -34,6 +38,7 @@ def _load_report_df(path_or_df: str | Path | pd.DataFrame) -> pd.DataFrame:
 _PIPELINE_HAZARD_DIR = {
     "spei": "drought",
     "utci": "heat",
+    "utci_cold": "cold",
     "flood": "flood",
     "violence": "violence",
     "hydrodrought": "hydrodrought",
@@ -108,8 +113,9 @@ def _build_context(row: pd.Series) -> dict[str, Any]:
 
 
 def _is_pipeline_eligible(row: pd.Series, pipeline: str) -> tuple[bool, str]:
-    can_run_col = f"can_run_{pipeline}"
-    preflight_col = f"{pipeline}_preflight_status"
+    base = _ELIGIBILITY_PIPELINE.get(pipeline, pipeline)
+    can_run_col = f"can_run_{base}"
+    preflight_col = f"{base}_preflight_status"
     if not bool(row.get("is_valid_manifest", True)):
         return False, "manifest_invalid"
     if not bool(row.get(can_run_col, False)):
@@ -159,6 +165,12 @@ def _default_utci_cmd(admin_path: Path, output_root: Path) -> str:
         "--admin-path " + str(admin_path) + " "
         "--output-root " + str(output_root)
     )
+
+
+def _default_utci_cold_cmd(admin_path: Path, output_root: Path) -> str:
+    # Cold defaults (-13, -27, -40 C, k=3) apply. The table carries every threshold;
+    # choose the discriminating band per country downstream.
+    return _default_utci_cmd(admin_path=admin_path, output_root=output_root) + " --extreme cold"
 
 
 def _default_hydrodrought_cmd(admin_path: Path, output_root: Path) -> str:
@@ -270,6 +282,7 @@ def run_batch_execution(
     templates: dict[str, str | None] = {
         "spei": _default_spei_cmd(admin_path=admin_path, output_root=output_root),
         "utci": _default_utci_cmd(admin_path=admin_path, output_root=output_root),
+        "utci_cold": _default_utci_cold_cmd(admin_path=admin_path, output_root=output_root),
         "flood": _default_flood_cmd(admin_path=admin_path, output_root=output_root),
         "violence": _default_violence_cmd(admin_path=admin_path, output_root=output_root),
         # Not wired into batch/readiness.py or batch/preflight.py's hazard-

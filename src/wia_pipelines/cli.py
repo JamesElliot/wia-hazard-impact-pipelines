@@ -226,6 +226,7 @@ def _cmd_batch_run(args: argparse.Namespace) -> int:
     cmd_templates = {
         "spei": args.spei_cmd_template,
         "utci": args.utci_cmd_template,
+        "utci_cold": args.utci_cold_cmd_template,
         "flood": args.flood_cmd_template,
         "violence": args.violence_cmd_template,
         "hydrodrought": args.hydrodrought_cmd_template,
@@ -568,14 +569,28 @@ def _cmd_run_hydrodrought(args: argparse.Namespace) -> int:
 
 def _cmd_run_utci(args: argparse.Namespace) -> int:
     from .core.pipeline import RunAlreadyCompleteError
-    from .hazards.utci import UtciPipelineRunOptions, UtciRunInputs, run_utci_pipeline
+    from .hazards.utci import (
+        COLD_DEFAULT_THRESHOLDS_C,
+        HEAT_DEFAULT_THRESHOLDS_C,
+        UtciPipelineRunOptions,
+        UtciRunInputs,
+        run_utci_pipeline,
+    )
 
     iso3 = str(args.iso3).upper()
     worldpop_path = resolve_worldpop_path(iso3, args.worldpop_path, args.worldpop_dir)
-    thresholds = tuple(args.abs_threshold_c) if args.abs_threshold_c else (32.0, 38.0, 46.0)
+    extreme = args.extreme
+    default_thresholds = COLD_DEFAULT_THRESHOLDS_C if extreme == "cold" else HEAT_DEFAULT_THRESHOLDS_C
+    thresholds = tuple(args.abs_threshold_c) if args.abs_threshold_c else default_thresholds
+    reporting_threshold = (
+        float(args.default_reporting_threshold_c)
+        if args.default_reporting_threshold_c is not None
+        else float(thresholds[0])
+    )
     admin_path = resolve_admin_path(args.admin_path, iso3=iso3)
     payload = {
         "pipeline": "utci",
+        "extreme": extreme,
         "iso3": iso3,
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
@@ -587,6 +602,7 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
         "cds_buffer_deg": float(args.cds_buffer_deg),
         "k_consecutive_days": int(args.k_consecutive_days),
         "abs_thresholds_c": [float(v) for v in thresholds],
+        "default_reporting_threshold_c": reporting_threshold,
         "require_full_preflight_coverage": not bool(args.allow_partial_preflight),
         "preflight_coverage_hard_min_pct": float(args.preflight_coverage_hard_min_pct),
     }
@@ -603,6 +619,7 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
                     lookback_months=int(args.lookback_months),
                     output_root=Path(args.output_root).expanduser().resolve(),
                     target_adm_level=int(args.target_adm_level),
+                    extreme=extreme,
                 ),
                 admin_path=admin_path,
                 worldpop_path=worldpop_path,
@@ -610,6 +627,7 @@ def _cmd_run_utci(args: argparse.Namespace) -> int:
                 iso3_field=args.iso3_field,
                 cds_buffer_deg=float(args.cds_buffer_deg),
                 abs_thresholds_c=tuple(float(v) for v in thresholds),
+                default_reporting_threshold_c=reporting_threshold,
                 k_consecutive_days=int(args.k_consecutive_days),
                 require_full_preflight_coverage=not bool(args.allow_partial_preflight),
                 preflight_coverage_hard_min_pct=float(args.preflight_coverage_hard_min_pct),
@@ -1023,11 +1041,12 @@ def build_parser() -> argparse.ArgumentParser:
     batch_run.add_argument(
         "--pipeline",
         action="append",
-        choices=["spei", "utci", "flood", "violence", "hydrodrought"],
+        choices=["spei", "utci", "utci_cold", "flood", "violence", "hydrodrought"],
         default=None,
     )
     batch_run.add_argument("--spei-cmd-template", default=None)
     batch_run.add_argument("--utci-cmd-template", default=None)
+    batch_run.add_argument("--utci-cold-cmd-template", default=None)
     batch_run.add_argument("--flood-cmd-template", default=None)
     batch_run.add_argument("--violence-cmd-template", default=None)
     batch_run.add_argument("--hydrodrought-cmd-template", default=None)
@@ -1181,11 +1200,26 @@ def build_parser() -> argparse.ArgumentParser:
     run_utci.add_argument("--cds-buffer-deg", type=float, default=0.25)
     run_utci.add_argument("--k-consecutive-days", type=int, default=3)
     run_utci.add_argument(
+        "--extreme",
+        choices=["heat", "cold"],
+        default="heat",
+        help="heat: daily max UTCI above threshold (default). cold: daily min UTCI below threshold.",
+    )
+    run_utci.add_argument(
         "--abs-threshold-c",
         action="append",
         type=float,
         default=None,
-        help="Repeat to set absolute UTCI thresholds in C (default: 32,38,46).",
+        help=(
+            "Repeat to set absolute UTCI thresholds in C "
+            "(default: heat 32,38,46; cold -13,-27,-40). Use --abs-threshold-c=-13 for negatives."
+        ),
+    )
+    run_utci.add_argument(
+        "--default-reporting-threshold-c",
+        type=float,
+        default=None,
+        help="Threshold used for the headline columns/maps (default: first threshold; must be in the list).",
     )
     run_utci.add_argument("--allow-partial-preflight", action="store_true")
     run_utci.add_argument("--preflight-coverage-hard-min-pct", type=float, default=50.0)

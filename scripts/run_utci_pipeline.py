@@ -8,6 +8,8 @@ from pathlib import Path
 from wia_pipelines.core.assets import resolve_admin_path
 from wia_pipelines.batch.readiness import worldpop_path_for_iso3
 from wia_pipelines.hazards.utci import (
+    COLD_DEFAULT_THRESHOLDS_C,
+    HEAT_DEFAULT_THRESHOLDS_C,
     UtciPipelineRunOptions,
     UtciRunInputs,
     run_utci_pipeline,
@@ -36,12 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--worldpop-dir", default="./data/population")
     p.add_argument("--cds-buffer-deg", type=float, default=0.25)
     p.add_argument("--k-consecutive-days", type=int, default=3)
+    p.add_argument("--extreme", choices=["heat", "cold"], default="heat")
+    p.add_argument("--default-reporting-threshold-c", type=float, default=None)
     p.add_argument(
         "--abs-threshold-c",
         action="append",
         type=float,
         default=None,
-        help="Repeat to set absolute UTCI thresholds in C (default: 32,38,46).",
+        help="Repeat to set absolute UTCI thresholds in C (default: heat 32,38,46; cold -13,-27,-40).",
     )
     p.add_argument("--allow-partial-preflight", action="store_true")
     p.add_argument("--dry-run", action="store_true")
@@ -57,9 +61,16 @@ def main() -> int:
         if args.worldpop_path
         else worldpop_path_for_iso3(iso3, Path(args.worldpop_dir).expanduser().resolve())
     )
-    thresholds = tuple(args.abs_threshold_c) if args.abs_threshold_c else (32.0, 38.0, 46.0)
+    default_thresholds = COLD_DEFAULT_THRESHOLDS_C if args.extreme == "cold" else HEAT_DEFAULT_THRESHOLDS_C
+    thresholds = tuple(args.abs_threshold_c) if args.abs_threshold_c else default_thresholds
+    reporting_threshold = (
+        float(args.default_reporting_threshold_c)
+        if args.default_reporting_threshold_c is not None
+        else float(thresholds[0])
+    )
     payload = {
         "pipeline": "utci",
+        "extreme": args.extreme,
         "iso3": iso3,
         "as_of_date": args.as_of_date,
         "lookback_months": int(args.lookback_months),
@@ -86,6 +97,7 @@ def main() -> int:
                 lookback_months=int(args.lookback_months),
                 output_root=Path(args.output_root).expanduser().resolve(),
                 target_adm_level=int(args.target_adm_level),
+                extreme=args.extreme,
             ),
             admin_path=admin_path,
             worldpop_path=worldpop_path,
@@ -93,6 +105,7 @@ def main() -> int:
             iso3_field=args.iso3_field,
             cds_buffer_deg=float(args.cds_buffer_deg),
             abs_thresholds_c=tuple(float(v) for v in thresholds),
+            default_reporting_threshold_c=reporting_threshold,
             k_consecutive_days=int(args.k_consecutive_days),
             require_full_preflight_coverage=not bool(args.allow_partial_preflight),
         )

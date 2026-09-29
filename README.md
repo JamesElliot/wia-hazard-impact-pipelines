@@ -1,7 +1,7 @@
 # WIA Hazard Impact Pipelines
 
 Reference Python workflows for estimating the share of people affected by
-flooding, extreme heat, drought, earthquakes, tropical cyclones, and violence for the WASH Insecurity Analysis
+flooding, extreme heat, extreme cold, drought, earthquakes, tropical cyclones, and violence for the WASH Insecurity Analysis
 (WIA).
 
 The repository is intended to make the current indicator methodology
@@ -15,6 +15,7 @@ are examples and quality-control aids.
 |---|---|---|
 | Flood | Copernicus Global Flood Monitoring via EODC STAC | Population in pixels with more than the configured number of flooded days |
 | Extreme heat | Copernicus historical UTCI via CDS | Population in pixels exceeding a UTCI threshold for the configured consecutive-day period |
+| Extreme cold | Copernicus historical UTCI via CDS (daily minimum) | Population in pixels below a UTCI threshold for the configured consecutive-day period; see [cold-utci.md](docs/indicators/cold-utci.md) |
 | Drought | Copernicus SPEI12 via CDS | Population in pixels at or below a configured SPEI threshold in any month of the window |
 | Hydrological drought | Copernicus GloFAS historical (EWDS) + HydroRIVERS | Population within a river-corridor buffer of a GloFAS reach with SRI3 at or below the reporting threshold, persisting at least 2 consecutive months |
 | Earthquake | USGS catalogue and ShakeMap | Population in pixels whose maximum shaking reaches MMI VI during the window |
@@ -61,6 +62,7 @@ distributed with this repository.
 wia-hazards run-spei --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-hydrodrought --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-utci --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
+wia-hazards run-utci --iso3 AFG --as-of-date 2026-06-30 --extreme cold --default-reporting-threshold-c=-27
 wia-hazards run-flood --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12
 wia-hazards run-flood-bulk --iso3 SSD --start-year 2021 --end-year 2025
 wia-hazards run-violence --iso3 YEM --as-of-date 2025-12-31 --lookback-months 12

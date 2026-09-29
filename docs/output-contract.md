@@ -2,7 +2,7 @@
 
 Each run lives at `outputs/<ISO3>/<WINDOW>/<hazard>/`, where `WINDOW` is
 `<as_of_date>_m<lookback_months>` (e.g. `2024-12-31_m12`) and `hazard` is one
-of `flood`, `heat`, `drought`, `earthquake`, `cyclone`, `violence`,
+of `flood`, `heat`, `cold`, `drought`, `earthquake`, `cyclone`, `violence`,
 `hydrodrought`. This
 country-first shape lets a run's outputs be copied or symlinked directly into
 a WIA country folder. Within that directory, each run creates these canonical

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from wia_pipelines.batch.execute import run_batch_execution
+from wia_pipelines.batch.execute import PIPELINES, _PIPELINE_HAZARD_DIR, run_batch_execution
 
 
 class BatchExecutionTests(unittest.TestCase):
@@ -60,6 +60,42 @@ class BatchExecutionTests(unittest.TestCase):
             self.assertEqual(out["summary"]["n_dry_run"], 1)
             self.assertEqual(out["summary"]["n_failed"], 0)
             self.assertTrue(Path(out["status_json"]).exists())
+
+    def test_utci_cold_is_a_default_batch_pipeline_sharing_utci_eligibility(self) -> None:
+        self.assertIn("utci_cold", PIPELINES)
+        self.assertEqual(_PIPELINE_HAZARD_DIR["utci_cold"], "cold")
+        with tempfile.TemporaryDirectory() as td:
+            readiness, preflight = self._write_inputs(td)
+            r = pd.read_csv(readiness)
+            r["can_run_utci"] = True
+            r.to_csv(readiness, index=False)
+            p = pd.read_csv(preflight)
+            p["utci_preflight_status"] = "PASS"
+            p.to_csv(preflight, index=False)
+            out = run_batch_execution(
+                readiness=readiness,
+                preflight=preflight,
+                out_dir=Path(td) / "out",
+                pipelines=["utci", "utci_cold"],
+                dry_run=True,
+            )
+            rows = out["rows"].set_index("pipeline")
+            self.assertEqual(rows.loc["utci_cold", "status"], "DRY_RUN")
+            self.assertIn("--extreme cold", rows.loc["utci_cold", "command"])
+            self.assertNotIn("--extreme", rows.loc["utci", "command"])
+
+    def test_utci_cold_skipped_when_utci_not_eligible(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            readiness, preflight = self._write_inputs(td)  # can_run_utci False, preflight SKIP
+            out = run_batch_execution(
+                readiness=readiness,
+                preflight=preflight,
+                out_dir=Path(td) / "out",
+                pipelines=["utci_cold"],
+                dry_run=True,
+            )
+            self.assertEqual(out["summary"]["n_skipped"], 1)
+            self.assertEqual(out["rows"].iloc[0]["error"], "can_run_utci_false")
 
     def test_batch_execution_retry_and_fail(self) -> None:
         with tempfile.TemporaryDirectory() as td:
