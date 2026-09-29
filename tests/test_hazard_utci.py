@@ -252,7 +252,9 @@ class ColdDirectionTests(unittest.TestCase):
         mask = _consecutive_k_exceedance(_exceeds_threshold(tmin, -13.0, "cold"), k=3)
         self.assertFalse(bool(mask.values[0]))  # the warm day breaks both runs of two
         tmin2 = tmin.copy(data=np.array([[-20.0], [-20.0], [-20.0], [-5.0], [-5.0]]))
-        self.assertTrue(bool(_consecutive_k_exceedance(_exceeds_threshold(tmin2, -13.0, "cold"), k=3).values[0]))
+        self.assertTrue(
+            bool(_consecutive_k_exceedance(_exceeds_threshold(tmin2, -13.0, "cold"), k=3).values[0])
+        )
 
     def test_find_daily_stat_selects_min_and_max(self) -> None:
         import numpy as np
