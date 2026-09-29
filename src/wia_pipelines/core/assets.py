@@ -21,6 +21,8 @@ class AdminSourceManifestError(Exception):
     admin dataset is present but its provenance manifest is not" -- the two
     require different fixes.
     """
+
+
 DEFAULT_WORLDPOP_DIR = Path("./data/population")
 DEFAULT_IBTRACS_DIR = Path("./data/cyclone")
 DEFAULT_HYDRORIVERS_PATH = Path("./data/HydroRIVERS_v10/HydroRIVERS_v10.gdb")
@@ -108,14 +110,18 @@ def load_admin_source_manifest(admin_path: str | Path) -> dict[str, str]:
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise AdminSourceManifestError(f"Could not read/parse admin-boundary manifest {manifest_path}: {exc}") from exc
+        raise AdminSourceManifestError(
+            f"Could not read/parse admin-boundary manifest {manifest_path}: {exc}"
+        ) from exc
 
     if not isinstance(raw, dict):
         raise AdminSourceManifestError(f"Admin-boundary manifest {manifest_path} must contain a JSON object.")
 
     authority = raw.get("authority")
     if not isinstance(authority, str) or not authority.strip():
-        raise AdminSourceManifestError(f"Admin-boundary manifest {manifest_path} is missing a non-empty 'authority'.")
+        raise AdminSourceManifestError(
+            f"Admin-boundary manifest {manifest_path} is missing a non-empty 'authority'."
+        )
 
     vintage = raw.get("vintage")
     if not isinstance(vintage, str) or not _VINTAGE_PATTERN.match(vintage):

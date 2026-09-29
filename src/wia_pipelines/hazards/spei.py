@@ -633,7 +633,9 @@ def run_spei_pipeline(options: SpeiPipelineRunOptions) -> dict[str, Any]:
         pct_affected_column=f"pct_affected_{default_key}",
     )
     vintage = metadata["admin_source"]["vintage"]
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_water_scarcity_spei12_{config.as_of_date}.csv"
+    out_csv = (
+        layout["tables"] / f"{iso3}_{admin_label}_{vintage}_water_scarcity_spei12_{config.as_of_date}.csv"
+    )
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     append_artifact(
         metadata, "admin_water_scarcity_table", out_csv, f"{admin_label.title()} SPEI exposure table"

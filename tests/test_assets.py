@@ -151,7 +151,6 @@ def test_load_admin_source_manifest_valid_returns_fields(tmp_path: Path):
     assert manifest == {"authority": "COD", "vintage": "COD2026-06", "access_date": "2026-06-14"}
 
 
-
 def test_find_admin_path_for_iso3_matches_registered_country(tmp_path: Path):
     registry = tmp_path / "cod-ab"
     override_dir = registry / "mli_sdn_moz_lbn"
@@ -179,7 +178,14 @@ def test_find_admin_path_for_iso3_ignores_dataset_missing_from_disk(tmp_path: Pa
     override_dir = registry / "mli_sdn_moz_lbn"
     override_dir.mkdir(parents=True)
     (override_dir / "admin_source.json").write_text(
-        json.dumps({"authority": "COD", "vintage": "COD2026-07", "access_date": "2026-07-29", "countries": {"MLI": {}}}),
+        json.dumps(
+            {
+                "authority": "COD",
+                "vintage": "COD2026-07",
+                "access_date": "2026-07-29",
+                "countries": {"MLI": {}},
+            }
+        ),
         encoding="utf-8",
     )
     # admin_boundaries.gpkg deliberately not created.
@@ -192,7 +198,14 @@ def test_resolve_admin_path_explicit_path_wins_over_iso3_override(tmp_path: Path
     override_dir.mkdir(parents=True)
     (override_dir / "admin_boundaries.gpkg").write_bytes(b"placeholder")
     (override_dir / "admin_source.json").write_text(
-        json.dumps({"authority": "COD", "vintage": "COD2026-07", "access_date": "2026-07-29", "countries": {"MLI": {}}}),
+        json.dumps(
+            {
+                "authority": "COD",
+                "vintage": "COD2026-07",
+                "access_date": "2026-07-29",
+                "countries": {"MLI": {}},
+            }
+        ),
         encoding="utf-8",
     )
     explicit = tmp_path / "explicit.gdb.zip"
