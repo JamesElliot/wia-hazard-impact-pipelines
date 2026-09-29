@@ -11,7 +11,7 @@ import jsonschema
 from .core.io_paths import build_run_layout as _build_run_layout
 
 
-SUPPORTED_HAZARDS = {"cyclone", "drought", "earthquake", "flood", "heat", "hydrodrought", "violence"}
+SUPPORTED_HAZARDS = {"cold", "cyclone", "drought", "earthquake", "flood", "heat", "hydrodrought", "violence"}
 
 
 def _validate_iso3(iso3: str) -> str:

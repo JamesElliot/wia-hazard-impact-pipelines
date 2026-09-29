@@ -62,3 +62,6 @@ data/cod-ab/*
 *.prj
 *.cpg
 *.parquet
+
+# Local copies of external REACH source files (data, sidecars); never committed.
+_afg_cold/

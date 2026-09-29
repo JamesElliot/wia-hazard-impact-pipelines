@@ -584,7 +584,9 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
         pct_affected_column="pct_affected_flood",
     )
     vintage = metadata["admin_source"]["vintage"]
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_flood_exposure_{window_start}_{window_end}.csv"
+    out_csv = (
+        layout["tables"] / f"{iso3}_{admin_label}_{vintage}_flood_exposure_{window_start}_{window_end}.csv"
+    )
     out_df.to_csv(out_csv, index=False)
     _artifact("admin_flood_table", out_csv, f"{admin_label.title()} flood exposure + severity table")
 

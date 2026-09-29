@@ -314,9 +314,9 @@ def run_violence_pipeline(
     # in-country event is at risk of being dropped.
     pad_deg = 0.2
     minx, miny, maxx, maxy = admin_bounds
-    in_bounds = events_wgs84.geometry.x.between(minx - pad_deg, maxx + pad_deg) & events_wgs84.geometry.y.between(
-        miny - pad_deg, maxy + pad_deg
-    )
+    in_bounds = events_wgs84.geometry.x.between(
+        minx - pad_deg, maxx + pad_deg
+    ) & events_wgs84.geometry.y.between(miny - pad_deg, maxy + pad_deg)
     events_wgs84 = events_wgs84.loc[in_bounds].reset_index(drop=True)
     df = df.loc[in_bounds].reset_index(drop=True)
     if events_wgs84.empty:
@@ -534,7 +534,11 @@ def run_violence_pipeline(
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(wp_plot, interpolation="nearest", extent=extent, origin="upper")
     ax.imshow(
-        np.where(mask_plot == 1, 1, np.nan), interpolation="nearest", extent=extent, origin="upper", alpha=0.35
+        np.where(mask_plot == 1, 1, np.nan),
+        interpolation="nearest",
+        extent=extent,
+        origin="upper",
+        alpha=0.35,
     )
     admin_units.boundary.plot(ax=ax, linewidth=0.5, edgecolor="black", alpha=0.8)
     ax.set_title(f"{config.iso3} violence mask on WorldPop")

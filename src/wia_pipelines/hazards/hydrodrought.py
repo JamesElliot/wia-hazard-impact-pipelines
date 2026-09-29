@@ -327,7 +327,9 @@ def _download_monthly_mean_discharge(
                     "download_format": "unarchived",
                     "area": cds_area,
                 }
-                ok, err = download_ewds("cems-glofas-historical", request, raw_path, url=ewds_url, key=ewds_key)
+                ok, err = download_ewds(
+                    "cems-glofas-historical", request, raw_path, url=ewds_url, key=ewds_key
+                )
                 if ok:
                     product_type_used = product_type
                     break
@@ -824,7 +826,9 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
         pct_affected_column=f"pct_affected_{default_key}",
     )
     vintage = metadata["admin_source"]["vintage"]
-    out_csv = layout["tables"] / f"{iso3}_{admin_label}_{vintage}_hydro_drought_glofas_sri_{config.as_of_date}.csv"
+    out_csv = (
+        layout["tables"] / f"{iso3}_{admin_label}_{vintage}_hydro_drought_glofas_sri_{config.as_of_date}.csv"
+    )
     out.drop(columns=["admin_id"]).to_csv(out_csv, index=False)
     append_artifact(
         metadata, "admin_hydrodrought_table", out_csv, f"{admin_label.title()} GloFAS SRI exposure table"

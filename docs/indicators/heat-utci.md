@@ -11,6 +11,8 @@ consecutive days. A pixel is affected for a threshold when at least one such
 run occurs in the configured analysis window. Affected population is WorldPop
 on the resulting binary mask.
 
+Cold uses the same module with the daily minimum; see [cold-utci.md](cold-utci.md).
+
 ## Principal outputs
 
 - one binary mask and affected-population raster per threshold;

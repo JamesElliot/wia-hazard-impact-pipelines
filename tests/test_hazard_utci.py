@@ -9,7 +9,11 @@ from wia_pipelines.hazards.utci import (
     UtciPipelineRunOptions,
     UtciRunInputs,
     _consecutive_k_exceedance,
+    _exceeds_threshold,
+    _find_daily_stat_utci,
+    _threshold_key,
     build_utci_run_context,
+    run_utci_pipeline,
 )
 
 HAS_XARRAY = importlib.util.find_spec("xarray") is not None
@@ -34,6 +38,36 @@ class UtciHazardTests(unittest.TestCase):
             )
             self.assertEqual(ctx["config"].hazard, "heat")
             self.assertTrue((ctx["layout"]["base"] / "run_metadata.json").exists())
+
+    def test_build_utci_run_context_cold(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ctx = build_utci_run_context(
+                UtciRunInputs(iso3="AFG", as_of_date="2026-06-30", output_root=Path(td), extreme="cold"),
+                create_dirs=True,
+                write_metadata=True,
+            )
+            self.assertEqual(ctx["config"].hazard, "cold")
+            self.assertEqual(ctx["metadata"]["run_id"], "AFG_2025-07-01_2026-06-30_m12_cold")
+            self.assertEqual(ctx["metadata"]["pipeline"], "extreme_cold_utci")
+            self.assertIn("/cold", str(ctx["layout"]["base"]))
+
+    def test_invalid_extreme_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            UtciRunInputs(iso3="AFG", as_of_date="2026-06-30", extreme="hot")
+
+    def test_threshold_keys(self) -> None:
+        self.assertEqual(_threshold_key("heat", 38.0), "abs_38c")
+        self.assertEqual(_threshold_key("cold", -13.0), "cold_m13c")
+        self.assertEqual(_threshold_key("cold", 0.0), "cold_0c")
+
+    def test_cold_with_heat_default_thresholds_is_rejected(self) -> None:
+        opts = UtciPipelineRunOptions(
+            inputs=UtciRunInputs(iso3="AFG", as_of_date="2026-06-30", extreme="cold"),
+            admin_path=Path("x"),
+            worldpop_path=Path("y"),
+        )
+        with self.assertRaisesRegex(ValueError, "explicit cold thresholds"):
+            run_utci_pipeline(opts)
 
     def test_default_reporting_threshold_is_explicit(self) -> None:
         fields = UtciPipelineRunOptions.__dataclass_fields__
@@ -196,3 +230,42 @@ class UtciPipelineExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_XARRAY, "xarray not installed")
+class ColdDirectionTests(unittest.TestCase):
+    def test_exceeds_threshold_is_strict_and_directional(self) -> None:
+        import numpy as np
+        import xarray as xr
+
+        da = xr.DataArray(np.array([-12.9, -13.0, -13.1, np.nan]), dims=("time",))
+        cold = _exceeds_threshold(da, -13.0, "cold").values.tolist()
+        self.assertEqual(cold, [False, False, True, False])  # strict <, NaN is not cold
+        heat = _exceeds_threshold(da, -13.0, "heat").values.tolist()
+        self.assertEqual(heat, [True, False, False, False])
+
+    def test_cold_run_of_three_days(self) -> None:
+        import numpy as np
+        import xarray as xr
+
+        tmin = xr.DataArray(np.array([[-20.0], [-20.0], [-5.0], [-20.0], [-20.0]]), dims=("time", "cell"))
+        mask = _consecutive_k_exceedance(_exceeds_threshold(tmin, -13.0, "cold"), k=3)
+        self.assertFalse(bool(mask.values[0]))  # the warm day breaks both runs of two
+        tmin2 = tmin.copy(data=np.array([[-20.0], [-20.0], [-20.0], [-5.0], [-5.0]]))
+        self.assertTrue(
+            bool(_consecutive_k_exceedance(_exceeds_threshold(tmin2, -13.0, "cold"), k=3).values[0])
+        )
+
+    def test_find_daily_stat_selects_min_and_max(self) -> None:
+        import numpy as np
+        import xarray as xr
+
+        ds = xr.Dataset(
+            {
+                "utci_daily_min": (("time",), np.array([250.0])),
+                "utci_daily_max": (("time",), np.array([280.0])),
+                "time_bnds": (("time",), np.array([0.0])),
+            }
+        )
+        self.assertEqual(float(_find_daily_stat_utci(ds, "min").values[0]), 250.0)
+        self.assertEqual(float(_find_daily_stat_utci(ds, "max").values[0]), 280.0)

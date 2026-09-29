@@ -21,6 +21,14 @@ class HazardMethod:
 
 
 HAZARD_METHODS: dict[str, HazardMethod] = {
+    "cold": HazardMethod(
+        hazard="cold",
+        pipeline="extreme_cold_utci",
+        method_version="0.1.0",
+        population_rule=(
+            "WorldPop cells whose daily minimum UTCI is below the threshold for the consecutive-day duration"
+        ),
+    ),
     "cyclone": HazardMethod(
         hazard="cyclone",
         pipeline="cyclone_ibtracs_wind_radii",

@@ -24,6 +24,7 @@ rather than defining their own reporting identity.
 | `hydrodrought` | `hydro_drought_glofas_sri` | River-corridor population near a GloFAS reach with SRI3 ≤ −1.5 for ≥2 consecutive months |
 | `earthquake` | `earthquake_usgs_shakemap` | Maximum ShakeMap intensity reaches MMI VI |
 | `heat` | `extreme_heat_utci` | UTCI > 32°C for at least three consecutive days |
+| `cold` | `extreme_cold_utci` | Daily minimum UTCI < threshold for at least three consecutive days; thresholds set per country (no default headline) |
 | `flood` | `gfm_flood` | Flooded-day count > 0 |
 | `cyclone` | `cyclone_ibtracs_wind_radii` | Inside the observed 63 km/h wind swath |
 | `violence` | `violence_acled_proximity` | Buffered event count ≥ 1 |
@@ -83,7 +84,7 @@ part of the methodological intent and record that decision in run metadata.
 
 Multi-threshold tables retain every threshold. The canonical cross-hazard
 `population_affected` and `pct_affected` aliases use SPEI ≤ −1.5 for drought and
-UTCI > 32°C for heat. Earthquake uses MMI VI. Flood, cyclone, and violence have
+UTCI > 32°C for heat. Cold has no canonical threshold: the CLI headline is the first threshold (−13°C) unless `--default-reporting-threshold-c` is set, and −13°C saturates in AFG, UKR and MNG, so choose the band per country. Earthquake uses MMI VI. Flood, cyclone, and violence have
 one primary reporting threshold. See the individual indicator documents for
 secondary severity bands.
 
