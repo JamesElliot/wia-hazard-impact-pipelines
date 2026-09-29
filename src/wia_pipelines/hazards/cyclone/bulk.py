@@ -12,6 +12,7 @@ import pandas as pd
 import yaml
 
 from ...config import RunConfig, build_run_paths
+from ...core.data_sources import write_retrieval_record
 from .pipeline import RunInputs, run_pipeline, validate_inputs
 
 
@@ -103,6 +104,7 @@ def download_worldpop(
     destination.with_suffix(".source.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
+    write_retrieval_record(destination, source=url)
     return destination
 
 

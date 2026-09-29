@@ -217,6 +217,14 @@ class UtciPipelineExecutionTests(unittest.TestCase):
             self.assertEqual(metadata["inputs"]["admin"]["path"], str(admin_path.resolve()))
             self.assertEqual(metadata["admin_source"]["vintage"], "TEST2026-01")
 
+            from conftest import check_data_sources
+
+            entries = check_data_sources(metadata, ["ERA5-HEAT", "WorldPop", "TEST administrative"])
+            utci = entries["ERA5-HEAT (UTCI)"]
+            self.assertEqual(utci["doi"], "10.24381/cds.553b7518")
+            self.assertEqual(utci["version"], "1_1")
+            self.assertEqual(utci["selection"]["statistic"], "daily_max")
+
     @staticmethod
     def _utci_inputs(root: Path):
         return UtciRunInputs(

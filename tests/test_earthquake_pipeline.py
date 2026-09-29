@@ -8,7 +8,7 @@ import pytest
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from conftest import make_worldpop_tif, write_admin_source_manifest
+from conftest import check_data_sources, make_worldpop_tif, write_admin_source_manifest
 from wia_pipelines.config import RunConfig
 from wia_pipelines.core.admin import build_admin_aoi
 from wia_pipelines.core.assets import shared_cache_root, url_cache_key
@@ -109,6 +109,10 @@ def test_run_pipeline_full_worldpop_coverage_assigns_all_population(tmp_path):
     assert summary["population_assigned_fraction"] == pytest.approx(1.0, abs=1e-6)
     assert summary["population_raster_total"] == pytest.approx(200.0, abs=1e-6)
     assert summary["pop_total"] == pytest.approx(200.0, abs=1e-6)
+    entries = check_data_sources(metadata, ["USGS ShakeMap", "WorldPop"])
+    usgs = entries["USGS ShakeMap"]
+    assert usgs["selection"]["events_included"] == 0
+    assert usgs["licence"].startswith("U.S. Public Domain")
 
 
 def test_run_pipeline_raises_when_unassigned_population_exceeds_tolerance(tmp_path):

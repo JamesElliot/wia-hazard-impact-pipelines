@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import geopandas as gpd
@@ -7,7 +8,7 @@ import pytest
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from conftest import make_worldpop_tif, write_admin_source_manifest
+from conftest import check_data_sources, make_worldpop_tif, write_admin_source_manifest
 from wia_pipelines.hazards.cyclone.pipeline import RunInputs, run_pipeline
 
 
@@ -103,6 +104,11 @@ def test_pipeline_preserves_population_and_writes_auditable_outputs(tmp_path):
     assert (output / "maps" / "HI06_TST_pct_affected_admin2_2026-06-30.png").stat().st_size > 0
     assert (output / "run_metadata.json").exists()
     assert (output / "logs" / "HI06_TST.source.md").exists()
+    metadata = json.loads((output / "run_metadata.json").read_text(encoding="utf-8"))
+    entries = check_data_sources(metadata, ["IBTrACS", "WorldPop"])
+    assert not any(name.startswith("GDACS") for name in entries)  # fallback not used
+    assert entries["IBTrACS"]["sha256"] == metadata["inputs"]["ibtracs"]["sha256"]
+    assert entries["IBTrACS"]["period"] == metadata["window"]
 
 
 def test_pipeline_fails_when_primary_footprint_completeness_is_too_low(tmp_path):

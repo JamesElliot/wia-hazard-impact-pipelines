@@ -130,9 +130,9 @@ or not stated is an explicit `null`, never a missing key.
 | `area` | Country code, or `{iso3, bbox_nwse}` for a CDS request |
 | `selection` | Filters applied: variable and statistic, thresholds, event types, product tiers, event ids and versions |
 | `sha256` | Checksum of the local input file, where there is one |
-| `licence`, `licence_url` | Licence or terms as the provider states them (short text and the terms URL). `null` only where the provider states nothing |
+| `licence`, `licence_url` | Licence or terms as the provider states them (short text and the terms URL). `null` means no licence is recorded; `notes` then says whether the provider states none or the terms are unconfirmed |
 | `attribution` | The provider's required credit wording, with the year filled from `access_date` (`[Year]` when unknown) |
-| `notes` | Set where a provider's terms could not be retrieved; confirm before publishing a credit |
+| `notes` | Set where terms are unconfirmed or a provider states no licence; read it before publishing a credit |
 
 `licence` is descriptive. It is copied from the provider and is not legal advice. Entries never hold
 local paths or credentials; a check in `core/data_sources.py` rejects both.
@@ -148,8 +148,13 @@ the fallback was used), earthquake (USGS ShakeMap, WorldPop, COD-AB).
   `<file>.retrieved.json` record beside the file with the retrieval date. A CDS run states the **latest**
   retrieval date over its monthly downloads, and only when every download has a record. The per-month
   detail stays in the CDS manifest CSV.
-- **GFM** uses the date of the STAC query in that run. If the run reused an existing flood-days raster it
-  made no query, so the date is `null`.
+- **GFM** uses the date of the STAC query, which is saved beside the flood-days raster
+  (`<raster>.retrieved.json`) so a run that reuses the raster reports the original date. A raster made
+  before this change has no record, so its date is `null`.
+- **GDACS** (cyclone fallback) keeps its retrieval date beside the cached fallback files, so cache hits
+  report it.
+- **Cyclone bulk WorldPop downloads** already wrote `<file>.source.json` with `retrieved_utc`; that date is
+  used when there is no `.retrieved.json`.
 - **User-supplied files** (WorldPop, ACLED, IBTrACS, HydroRIVERS) have no retrieval record unless you make
   one. Use `wia-hazards record-retrieval <file>... --date YYYY-MM-DD`, or pass `--acled-access-date` /
   `--ibtracs-access-date`. An ACLED export named `ACLED Data_YYYY-MM-DD...` supplies its own date.
@@ -161,8 +166,18 @@ the fallback was used), earthquake (USGS ShakeMap, WorldPop, COD-AB).
 
 DOIs, licences and attribution wording live in `REGISTRY` in `core/data_sources.py`, read from each
 provider's catalogue or terms page on 2026-09-29 (CDS/EWDS catalogue API, the Copernicus and CEMS licence
-PDFs, NOAA NCEI, USGS, WorldPop, HydroSHEDS, HDX, ACLED). Two could not be confirmed and say so in `notes`:
-the GDACS terms page returned HTTP 404, and the GFM terms text and attribution wording were not published
-in the EODC collection metadata (its STAC record lists `proprietary`). COD-AB licences are set per country
-on HDX (CC BY-IGO for AFG, UKR, MNG and YEM); confirm others. Re-check the registry when a provider changes
-its terms.
+PDFs, NOAA NCEI, USGS, WorldPop, HydroSHEDS, ACLED). Re-check the registry when a provider changes its terms.
+Three cases carry a `notes` warning:
+
+- **GFM:** the EODC STAC record says `proprietary`, which only means a non-SPDX licence and is not
+  necessarily closed data. The GFM Product User Manual's CC BY 4.0 statement covers the document, not the
+  data. The data terms and attribution wording are unconfirmed.
+- **GDACS** (used only for the cyclone fallback): its terms of use state no licence and no attribution
+  wording, only disclaimers, so `licence` is null. Some third-party catalogues list CC BY 4.0; GDACS does
+  not confirm it.
+- **Boundary sets:** HDX sets the licence per dataset, so it is read from the boundary set's own
+  `admin_source.json` (`licence`, `licence_url`, `dataset_url`, `terms_checked_on`), not from the registry.
+  The shared global archive records CC BY-IGO (HDX `cod-ab-global`, checked 2026-09-29). A manifest without
+  those fields gives `licence: null` and a note. Per-country override manifests under `data/cod-ab/` are
+  local files: add the fields there. HDX lists CC BY-IGO for `cod-ab-mdg`, `-mli`, `-sdn`, `-moz` and
+  `-lbn` on the same date.

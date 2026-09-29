@@ -426,6 +426,58 @@ def _persistent_occurrence(below: Any, min_consecutive: int) -> Any:
     return result
 
 
+def _add_hydrodrought_data_sources(
+    metadata: dict[str, Any],
+    *,
+    options: HydrodroughtPipelineRunOptions,
+    config: Any,
+    cds_area: list[float],
+    baseline_manifest: Path,
+    window_manifest: Path,
+    thresholds: dict[str, float],
+    accumulation_months: int,
+    checksum_cache_dir: Path,
+) -> None:
+    """GloFAS, HydroRIVERS, WorldPop and boundary entries. The GloFAS access date is known only when
+    every downloaded month has a retrieval record."""
+
+    import pandas as pd
+
+    iso3 = config.iso3
+    glofas_rows = pd.concat([pd.read_csv(baseline_manifest), pd.read_csv(window_manifest)])
+    glofas_ok = glofas_rows[glofas_rows["ok"].astype(bool)]
+    add_cds_data_source(
+        metadata,
+        "glofas_historical",
+        [Path(str(p)) for p in glofas_ok["path"]],
+        version="version_4_0",
+        period=run_period(config),
+        area={"iso3": iso3, "bbox_nwse": cds_area},
+        selection={
+            "hydrological_model": "lisflood",
+            "timespan": "time_mean",
+            "variable": "average_river_discharge_in_the_last_24_hours",
+            "product_types_downloaded": sorted(str(t) for t in glofas_ok["product_type"].dropna().unique()),
+            "baseline_years": [int(options.baseline_start_year), int(options.baseline_end_year)],
+            "accumulation_months": int(accumulation_months),
+            "thresholds": {k: float(v) for k, v in thresholds.items()},
+        },
+    )
+    add_data_source(
+        metadata,
+        hydrorivers_data_source(
+            options.hydrorivers_path,
+            sha256=checksum_path(options.hydrorivers_path, cache_dir=checksum_cache_dir),
+        ),
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=iso3,
+        worldpop_path=options.worldpop_path,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+    )
+
+
 def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[str, Any]:
     import numpy as np
     import pandas as pd
@@ -923,37 +975,16 @@ def run_hydrodrought_pipeline(options: HydrodroughtPipelineRunOptions) -> dict[s
     # PROD-001: terminal marker so a *future* run can tell this one genuinely
     # finished (vs. the run_metadata.json build_hazard_run_context already
     # wrote at the very start of this run, before any real computation).
-    glofas_rows = pd.concat([pd.read_csv(baseline_manifest), pd.read_csv(window_manifest)])
-    glofas_ok = glofas_rows[glofas_rows["ok"].astype(bool)]
-    add_cds_data_source(
+    _add_hydrodrought_data_sources(
         metadata,
-        "glofas_historical",
-        [Path(str(p)) for p in glofas_ok["path"]],
-        version="version_4_0",
-        period=run_period(config),
-        area={"iso3": iso3, "bbox_nwse": cds_area},
-        selection={
-            "hydrological_model": "lisflood",
-            "timespan": "time_mean",
-            "variable": "average_river_discharge_in_the_last_24_hours",
-            "product_types_downloaded": sorted(str(t) for t in glofas_ok["product_type"].dropna().unique()),
-            "baseline_years": [int(options.baseline_start_year), int(options.baseline_end_year)],
-            "accumulation_months": int(accumulation_months),
-            "thresholds": {k: float(v) for k, v in thresholds.items()},
-        },
-    )
-    add_data_source(
-        metadata,
-        hydrorivers_data_source(
-            options.hydrorivers_path,
-            sha256=checksum_path(options.hydrorivers_path, cache_dir=checksum_cache_dir),
-        ),
-    )
-    add_population_and_admin_sources(
-        metadata,
-        iso3=iso3,
-        worldpop_path=options.worldpop_path,
-        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+        options=options,
+        config=config,
+        cds_area=cds_area,
+        baseline_manifest=baseline_manifest,
+        window_manifest=window_manifest,
+        thresholds=thresholds,
+        accumulation_months=accumulation_months,
+        checksum_cache_dir=checksum_cache_dir,
     )
     metadata["status"] = "SUCCESS"
     _sync_metadata()

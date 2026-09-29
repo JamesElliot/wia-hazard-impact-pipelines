@@ -685,6 +685,7 @@ def run_violence_pipeline(
             area=config.iso3,
             selection={
                 "included_event_types": selected_types,
+                "spatial_filter": f"admin-unit bounds of {config.iso3} plus {pad_deg} degrees padding",
                 "rows_loaded": int(len(raw_df)),
                 "rows_after_filter": int(len(df)),
                 "buffer_rule": "acled_buffer_km(event_type, fatalities)",

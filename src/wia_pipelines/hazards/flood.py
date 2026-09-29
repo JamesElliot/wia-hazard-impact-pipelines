@@ -9,7 +9,13 @@ from typing import Any
 
 from ..config import RunConfig
 from ..core.assets import checksum_path, shared_cache_root
-from ..core.data_sources import add_data_source, add_population_and_admin_sources, build_data_source
+from ..core.data_sources import (
+    add_data_source,
+    add_population_and_admin_sources,
+    build_data_source,
+    read_retrieval_date,
+    write_retrieval_record,
+)
 from ..core.pipeline import (
     build_admin_source,
     build_hazard_run_context,
@@ -121,6 +127,46 @@ class FloodPipelineRunOptions:
     chunk_y: int = 1024
     chunk_x: int = 1024
     skip_if_complete: bool = False
+
+
+def _add_flood_data_sources(
+    metadata: dict[str, Any],
+    *,
+    options: FloodPipelineRunOptions,
+    iso3: str,
+    datetime_range: str,
+    n_items: int,
+    reused_existing_flood_days: bool,
+    stac_access_date: str | None,
+) -> None:
+    """GFM, WorldPop and boundary entries. ``stac_access_date`` is None when this run made no
+    STAC query (it reused an existing flood-days raster), so the retrieval date is unknown."""
+
+    range_start, _, range_end = datetime_range.partition("/")
+    add_data_source(
+        metadata,
+        build_data_source(
+            "gfm",
+            catalogue_id=options.collection_id,
+            url=f"{options.stac_api_url}/collections/{options.collection_id}",
+            access_date=stac_access_date,
+            period={"start": range_start[:10], "end": (range_end or range_start)[:10]},
+            area={"iso3": iso3},
+            selection={
+                "asset": options.asset_key,
+                "stac_api": options.stac_api_url,
+                "items": int(n_items),
+                "reused_existing_flood_days_raster": bool(reused_existing_flood_days),
+                "flood_binary_threshold_days": int(options.flood_binary_threshold_days),
+            },
+        ),
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=iso3,
+        worldpop_path=options.worldpop_path,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+    )
 
 
 def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
@@ -281,6 +327,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     flood_nodata = 255
     union_cov: float | None = None
     if reused_existing_flood_days:
+        stac_access_date = read_retrieval_date(flood_days_tif)
         _artifact(
             "flood_days_tif", flood_days_tif, "Reused existing flood severity raster: days flooded per pixel"
         )
@@ -457,6 +504,12 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             dtype="uint16",
         )
         _artifact("flood_days_tif", flood_days_tif, "Flood severity raster: days flooded per pixel")
+        # The raster is a cache of this STAC query; keep its date so a later run that reuses the
+        # raster can still state when the GFM data were retrieved.
+        if stac_access_date:
+            write_retrieval_record(
+                flood_days_tif, retrieved_date=stac_access_date, source=options.stac_api_url
+            )
 
     # Align to worldpop grid and derive binary mask.
     days_aligned = False
@@ -674,30 +727,14 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     # PROD-001: terminal marker so a *future* run can tell this one genuinely
     # finished (vs. the run_metadata.json build_hazard_run_context already
     # wrote at the very start of this run, before any real computation).
-    range_start, _, range_end = datetime_range.partition("/")
-    add_data_source(
+    _add_flood_data_sources(
         metadata,
-        build_data_source(
-            "gfm",
-            catalogue_id=options.collection_id,
-            url=f"{options.stac_api_url}/collections/{options.collection_id}",
-            access_date=stac_access_date,
-            period={"start": range_start[:10], "end": (range_end or range_start)[:10]},
-            area={"iso3": iso3},
-            selection={
-                "asset": options.asset_key,
-                "stac_api": options.stac_api_url,
-                "items": int(len(items)),
-                "reused_existing_flood_days_raster": bool(reused_existing_flood_days),
-                "flood_binary_threshold_days": int(options.flood_binary_threshold_days),
-            },
-        ),
-    )
-    add_population_and_admin_sources(
-        metadata,
+        options=options,
         iso3=iso3,
-        worldpop_path=options.worldpop_path,
-        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
+        datetime_range=datetime_range,
+        n_items=len(items),
+        reused_existing_flood_days=reused_existing_flood_days,
+        stac_access_date=stac_access_date,
     )
     metadata["status"] = "SUCCESS"
     _sync()

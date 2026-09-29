@@ -108,3 +108,20 @@ def make_admin_gpkg(
     gdf.to_file(path, **kwargs)
     write_admin_source_manifest(path)
     return path
+
+
+def check_data_sources(metadata: dict, expected_datasets: list[str]) -> dict[str, dict]:
+    """A run's metadata validates and its ``data_sources`` name each expected dataset (by prefix),
+    with no local paths or credentials. Returns the entries keyed by dataset name."""
+
+    from wia_pipelines.config import validate_run_metadata
+    from wia_pipelines.core.data_sources import validate_data_source_entry
+
+    validate_run_metadata(metadata)
+    entries = {e["dataset"]: e for e in metadata["data_sources"]}
+    for prefix in expected_datasets:
+        assert any(name.startswith(prefix) for name in entries), (prefix, sorted(entries))
+    for entry in entries.values():
+        validate_data_source_entry(entry)
+        assert entry["licence"] is not None or entry.get("notes"), entry["dataset"]
+    return entries

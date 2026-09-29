@@ -215,6 +215,9 @@ def build_admin_source(
     }
     if asset_id:
         block["asset_id"] = asset_id
+    for optional in ("licence", "licence_url", "dataset_url", "terms_checked_on"):
+        if optional in manifest:
+            block[optional] = manifest[optional]
     return block
 
 

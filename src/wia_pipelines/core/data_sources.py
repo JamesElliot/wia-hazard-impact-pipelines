@@ -101,8 +101,10 @@ REGISTRY: dict[str, dict[str, Any]] = {
         "licence_url": "https://stac.eodc.eu/api/v1/collections/GFM",
         "attribution": None,
         "notes": (
-            "The GFM terms text and attribution wording were not retrievable on "
-            f"{REGISTRY_VERIFIED_ON}; confirm with JRC CEMS/EODC before publishing a credit."
+            f"Data terms not confirmed ({REGISTRY_VERIFIED_ON}). The STAC value 'proprietary' only means "
+            "a non-SPDX licence, not necessarily closed data. The GFM Product User Manual's CC BY 4.0 "
+            "statement covers the document, not the data. Confirm the data terms and attribution wording "
+            "with JRC CEMS/EODC before publishing a credit."
         ),
     },
     "worldpop": {
@@ -144,11 +146,12 @@ REGISTRY: dict[str, dict[str, Any]] = {
         "doi": None,
         "url": "https://www.gdacs.org",
         "licence": None,
-        "licence_url": None,
+        "licence_url": "https://gdacs.org/About/termofuse.aspx",
         "attribution": None,
         "notes": (
-            f"The GDACS terms-of-use page returned HTTP 404 on {REGISTRY_VERIFIED_ON}, so no licence "
-            "or attribution text was retrieved. Confirm with GDACS before publishing a credit."
+            f"The GDACS terms of use (read {REGISTRY_VERIFIED_ON}) state no licence and no attribution "
+            "wording, only disclaimers (provided 'as is', purely indicative). Third-party catalogues "
+            "list CC BY 4.0 for some GDACS datasets; GDACS itself does not confirm it."
         ),
     },
     "usgs_shakemap": {
@@ -175,19 +178,18 @@ REGISTRY: dict[str, dict[str, Any]] = {
             "and anything added or amended (ACLED Attribution Policy)."
         ),
     },
+    # Administrative boundaries: the licence depends on which boundary set a run used (the shared
+    # global archive or a per-country override), so it comes from that set's admin_source.json
+    # manifest ("licence", "licence_url", "dataset_url"), not from here. See admin_data_source().
     "cod_ab": {
         "dataset": "OCHA COD-AB administrative boundaries",
         "provider": "OCHA and national mapping authorities via HDX",
         "catalogue_id": None,
         "doi": None,
         "url": "https://data.humdata.org/",
-        "licence": "Creative Commons Attribution for Intergovernmental Organisations (CC BY-IGO)",
-        "licence_url": "https://creativecommons.org/licenses/by/3.0/igo/",
+        "licence": None,
+        "licence_url": None,
         "attribution": None,
-        "notes": (
-            f"Licence read from the HDX cod-ab-afg, -ukr, -mng and -yem datasets on {REGISTRY_VERIFIED_ON}. "
-            "HDX sets the licence per country dataset, so confirm it for other countries."
-        ),
     },
 }
 
@@ -291,12 +293,21 @@ def read_retrieval_date(path: str | Path) -> str | None:
     """Return the recorded retrieval date for ``path``, or None if there is no valid record."""
 
     rec = retrieval_record_path(path)
-    if not rec.exists():
-        return None
-    try:
-        return _as_date_str(json.loads(rec.read_text(encoding="utf-8")).get("retrieved_date"))
-    except (ValueError, OSError):
-        return None
+    if rec.exists():
+        try:
+            return _as_date_str(json.loads(rec.read_text(encoding="utf-8")).get("retrieved_date"))
+        except (ValueError, OSError):
+            return None
+    # WorldPop files fetched by the cyclone bulk runner carry their own `<stem>.source.json`
+    # with the download time; honour it as a recorded retrieval date.
+    legacy = Path(path).with_suffix(".source.json")
+    if legacy.exists():
+        try:
+            stamp = json.loads(legacy.read_text(encoding="utf-8")).get("retrieved_utc")
+            return _as_date_str(str(stamp)[:10]) if stamp else None
+        except (ValueError, OSError, TypeError):
+            return None
+    return None
 
 
 def latest_retrieval_date(paths: Iterable[str | Path]) -> tuple[str | None, int, int]:
@@ -452,19 +463,40 @@ def hydrorivers_data_source(
 
 
 def admin_data_source(admin_source: dict[str, Any], *, iso3: str) -> dict[str, Any]:
-    """COD-AB entry from a run's ``admin_source`` block, without its local path."""
+    """Boundary-set entry from a run's ``admin_source`` block, without its local path.
 
-    return build_data_source(
+    The licence comes from that boundary set's manifest, because HDX sets it per dataset. If the
+    manifest records none, ``licence`` is null and ``notes`` says it has not been confirmed.
+    """
+
+    authority = admin_source.get("authority")
+    overrides: dict[str, Any] = {
+        "licence": admin_source.get("licence"),
+        "licence_url": admin_source.get("licence_url"),
+    }
+    if admin_source.get("dataset_url"):
+        overrides["url"] = admin_source["dataset_url"]
+    if authority and authority != "COD":
+        overrides["dataset"] = f"{authority} administrative boundaries"
+        overrides["provider"] = authority
+        overrides["url"] = admin_source.get("dataset_url")
+    entry = build_data_source(
         "cod_ab",
         version=admin_source.get("vintage"),
         access_date=admin_source.get("access_date"),
         area=iso3.upper(),
-        selection={
-            "admin_level": admin_source.get("admin_level"),
-            "authority": admin_source.get("authority"),
-        },
+        selection={"admin_level": admin_source.get("admin_level"), "authority": authority},
         sha256=admin_source.get("sha256"),
+        **overrides,
     )
+    if not admin_source.get("licence"):
+        entry["notes"] = (
+            "The licence of this boundary set is not recorded in its admin_source.json manifest. "
+            "Add 'licence' and 'licence_url' there (HDX sets the licence per dataset), then re-run."
+        )
+    elif admin_source.get("terms_checked_on"):
+        entry["notes"] = f"Licence read from the provider on {admin_source['terms_checked_on']}."
+    return entry
 
 
 # --- helpers shared by the pipelines ---------------------------------------------------------------
