@@ -10,6 +10,8 @@ from typing import Any
 
 import pandas as pd
 
+from ..core.data_sources import write_retrieval_record
+
 
 @dataclass(frozen=True)
 class WorldPopDownloadSpec:
@@ -134,6 +136,7 @@ def download_worldpop_specs(
                 size_bytes = int(out.stat().st_size) if out.exists() else 0
                 if size_bytes <= 0:
                     raise RuntimeError("downloaded file is empty")
+                write_retrieval_record(out, source=spec.url)
                 status = "DOWNLOADED"
             except (
                 urllib.error.HTTPError,

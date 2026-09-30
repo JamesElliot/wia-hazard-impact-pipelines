@@ -162,6 +162,16 @@ class SpeiPipelineExecutionTests(unittest.TestCase):
             self.assertEqual(metadata["admin_source"]["vintage"], "TEST2026-01")
             self.assertIn("water_scarcity_spei12", str(summary["outputs"]["admin_table"]))
 
+            from conftest import check_data_sources
+
+            entries = check_data_sources(metadata, ["ERA5-Drought", "WorldPop", "TEST administrative"])
+            spei = entries["ERA5-Drought (SPEI)"]
+            self.assertEqual(spei["doi"], "10.24381/9bea5e16")
+            self.assertEqual(spei["selection"]["accumulation_period_months"], 12)
+            self.assertGreaterEqual(spei["selection"]["downloads"], 1)
+            # The fake downloader in this test writes no retrieval record, so the date is unknown.
+            self.assertIsNone(spei["access_date"])
+
     def test_run_spei_pipeline_requests_accumulation_period_12(self) -> None:
         # Mechanism-verification for the SPEI3->SPEI12 method change: proves
         # the pipeline now requests/labels SPEI12 correctly. This cannot

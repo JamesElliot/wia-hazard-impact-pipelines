@@ -45,6 +45,15 @@ def _cmd_validate_metadata(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_record_retrieval(args: argparse.Namespace) -> int:
+    from .core.data_sources import write_retrieval_record
+
+    for file in args.file:
+        out = write_retrieval_record(file, retrieved_date=args.date, source=args.source)
+        print(f"Wrote {out}")
+    return 0
+
+
 def _cmd_audit_coverage(args: argparse.Namespace) -> int:
     # Imported lazily to avoid requiring geospatial stack for non-audit commands.
     from .coverage_audit import LayerSpec, audit_hazard_layer_coverage
@@ -393,6 +402,7 @@ def _cmd_run_violence(args: argparse.Namespace) -> int:
             mask_threshold_events=int(args.mask_threshold_events),
             all_touched=bool(args.all_touched),
             skip_if_complete=bool(args.skip_if_complete),
+            acled_access_date=args.acled_access_date,
         )
     except RunAlreadyCompleteError as exc:
         print(json.dumps({"status": "ALREADY_COMPLETE", "run_dir": str(exc.layout["base"])}, indent=2))
@@ -780,6 +790,7 @@ def _cmd_run_cyclone(args: argparse.Namespace) -> int:
         ),
         gdacs_auto=bool(args.gdacs_auto),
         refresh_cache=bool(args.refresh_cache),
+        ibtracs_access_date=args.ibtracs_access_date,
     )
     payload = {
         "pipeline": "cyclone",
@@ -945,6 +956,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.set_defaults(func=_cmd_validate_metadata)
 
+    record_retrieval = subparsers.add_parser(
+        "record-retrieval",
+        help=(
+            "Record when a user-supplied input file (WorldPop, ACLED, IBTrACS) was retrieved, so "
+            "run_metadata data_sources can state its access date."
+        ),
+    )
+    record_retrieval.add_argument("file", nargs="+")
+    record_retrieval.add_argument("--date", required=True, help="Retrieval date, YYYY-MM-DD.")
+    record_retrieval.add_argument("--source", default=None, help="Dataset id or public URL (no credentials).")
+    record_retrieval.set_defaults(func=_cmd_record_retrieval)
+
     audit = subparsers.add_parser(
         "audit-coverage",
         help="Quick bbox coverage audit for hazard layers.",
@@ -1104,6 +1127,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_violence.add_argument("--target-adm-level", type=int, default=2)
     run_violence.add_argument("--admin-layer", default="admin2")
     run_violence.add_argument("--acled-csv", default=None)
+    run_violence.add_argument(
+        "--acled-access-date",
+        default=None,
+        help="Date the ACLED data were downloaded (YYYY-MM-DD), for run_metadata data_sources.",
+    )
     run_violence.add_argument(
         "--included-event-type",
         action="append",
@@ -1304,6 +1332,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_iso3_window_args(run_cyclone, as_of_date_help="Inclusive YYYY-MM-DD end date")
     run_cyclone.add_argument("--ibtracs-path", default=None)
     run_cyclone.add_argument("--ibtracs-dir", default="./data/cyclone")
+    run_cyclone.add_argument(
+        "--ibtracs-access-date",
+        default=None,
+        help="Date the IBTrACS file was downloaded (YYYY-MM-DD), for run_metadata data_sources.",
+    )
     _add_common_hazard_paths(run_cyclone)
     run_cyclone.add_argument("--target-adm-level", type=int, default=None)
     run_cyclone.add_argument("--admin-layer", default=None)

@@ -140,7 +140,13 @@ def load_admin_source_manifest(admin_path: str | Path) -> dict[str, str]:
             f"Admin-boundary manifest {manifest_path} has an invalid 'access_date' (got {access_date!r}): {exc}"
         ) from exc
 
-    return {"authority": authority.strip(), "vintage": vintage, "access_date": access_date}
+    manifest = {"authority": authority.strip(), "vintage": vintage, "access_date": access_date}
+    # Optional terms fields, copied into run_metadata's admin_source for the data_sources credit.
+    for optional in ("licence", "licence_url", "dataset_url", "terms_checked_on"):
+        value = raw.get(optional)
+        if isinstance(value, str) and value.strip():
+            manifest[optional] = value.strip()
+    return manifest
 
 
 def resolve_worldpop_path(

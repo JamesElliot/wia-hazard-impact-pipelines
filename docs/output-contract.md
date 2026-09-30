@@ -109,3 +109,75 @@ manifest (adjacent to the resolved admin path, e.g.
 the schema so historical runs that predate this field remain valid; a
 publication-readiness check can additionally require it via
 `wia-hazards validate-metadata --require-admin-source`.
+
+### Input dataset provenance (`data_sources`)
+
+`admin_source` covers the boundary set only. Since schema 1.2.0 every hazard run also writes a
+`data_sources` array to `run_metadata.json`: one entry per input dataset the run used, holding the
+facts a data credit needs. The array is optional in the schema, so older runs still validate.
+Each entry must state `dataset`, `provider`, `access_date` and `licence`; a value that is not known
+or not stated is an explicit `null`, never a missing key.
+
+| Field | Meaning |
+|---|---|
+| `dataset` | Canonical name, e.g. `ERA5-HEAT (UTCI)`, `IBTrACS`, `WorldPop Global 2015-2030 (constrained, 100 m)` |
+| `provider` | Publisher |
+| `catalogue_id` | Machine identifier where one exists (CDS dataset id, STAC collection) |
+| `version` | Release or version as the provider states it or the request used, e.g. `1_1`, `v04r01`, `R2025A v1` |
+| `doi` / `url` | DOI (preferred) and product URL |
+| `access_date` | Date the data were **retrieved**, never the run date. `null` when unknown, with a warning in the log and in `metadata["warnings"]` (stage `data_sources`) |
+| `period` | `{start, end}` of the window used |
+| `area` | Country code, or `{iso3, bbox_nwse}` for a CDS request |
+| `selection` | Filters applied: variable and statistic, thresholds, event types, product tiers, event ids and versions |
+| `sha256` | Checksum of the local input file, where there is one |
+| `licence`, `licence_url` | Licence or terms as the provider states them (short text and the terms URL). `null` means no licence is recorded; `notes` then says whether the provider states none or the terms are unconfirmed |
+| `attribution` | The provider's required credit wording, with the year filled from `access_date` (`[Year]` when unknown) |
+| `notes` | Set where terms are unconfirmed or a provider states no licence; read it before publishing a credit |
+
+`licence` is descriptive. It is copied from the provider and is not legal advice. Entries never hold
+local paths or credentials; a check in `core/data_sources.py` rejects both.
+
+Entries per pipeline: heat and cold (ERA5-HEAT/UTCI, WorldPop, COD-AB), drought (ERA5-Drought/SPEI,
+WorldPop, COD-AB), hydrological drought (GloFAS, HydroRIVERS, WorldPop, COD-AB), flood (GFM, WorldPop,
+COD-AB), violence (ACLED, WorldPop, COD-AB), cyclone (IBTrACS, WorldPop, COD-AB, plus GDACS only when
+the fallback was used), earthquake (USGS ShakeMap, WorldPop, COD-AB).
+
+#### Where the access date comes from
+
+- **Downloads made by this repository** (CDS, EWDS, WorldPop batch download, USGS) write a
+  `<file>.retrieved.json` record beside the file with the retrieval date. A CDS run states the **latest**
+  retrieval date over its monthly downloads, and only when every download has a record. The per-month
+  detail stays in the CDS manifest CSV.
+- **GFM** uses the date of the STAC query, which is saved beside the flood-days raster
+  (`<raster>.retrieved.json`) so a run that reuses the raster reports the original date. A raster made
+  before this change has no record, so its date is `null`.
+- **GDACS** (cyclone fallback) keeps its retrieval date beside the cached fallback files, so cache hits
+  report it.
+- **Cyclone bulk WorldPop downloads** already wrote `<file>.source.json` with `retrieved_utc`; that date is
+  used when there is no `.retrieved.json`.
+- **User-supplied files** (WorldPop, ACLED, IBTrACS, HydroRIVERS) have no retrieval record unless you make
+  one. Use `wia-hazards record-retrieval <file>... --date YYYY-MM-DD`, or pass `--acled-access-date` /
+  `--ibtracs-access-date`. An ACLED export named `ACLED Data_YYYY-MM-DD...` supplies its own date.
+- **Runs made before this change** left cached downloads with no record, so their `access_date` is `null`.
+  If you know when they were fetched, back-fill with `record-retrieval` (for example over
+  `outputs/_cache/heat/AFG/cds_raw/*.zip`) and re-run.
+
+#### Provider facts in the registry
+
+DOIs, licences and attribution wording live in `REGISTRY` in `core/data_sources.py`, read from each
+provider's catalogue or terms page on 2026-09-29 (CDS/EWDS catalogue API, the Copernicus and CEMS licence
+PDFs, NOAA NCEI, USGS, WorldPop, HydroSHEDS, ACLED). Re-check the registry when a provider changes its terms.
+Three cases carry a `notes` warning:
+
+- **GFM:** the EODC STAC record says `proprietary`, which only means a non-SPDX licence and is not
+  necessarily closed data. The GFM Product User Manual's CC BY 4.0 statement covers the document, not the
+  data. The data terms and attribution wording are unconfirmed.
+- **GDACS** (used only for the cyclone fallback): its terms of use state no licence and no attribution
+  wording, only disclaimers, so `licence` is null. Some third-party catalogues list CC BY 4.0; GDACS does
+  not confirm it.
+- **Boundary sets:** HDX sets the licence per dataset, so it is read from the boundary set's own
+  `admin_source.json` (`licence`, `licence_url`, `dataset_url`, `terms_checked_on`), not from the registry.
+  The shared global archive records CC BY-IGO (HDX `cod-ab-global`, checked 2026-09-29). A manifest without
+  those fields gives `licence: null` and a note. Per-country override manifests under `data/cod-ab/` are
+  local files: add the fields there. HDX lists CC BY-IGO for `cod-ab-mdg`, `-mli`, `-sdn`, `-moz` and
+  `-lbn` on the same date.

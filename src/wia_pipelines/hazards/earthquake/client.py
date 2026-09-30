@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ...core.data_sources import write_retrieval_record
+
 
 CATALOG_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
@@ -138,6 +140,7 @@ def download_cached(
     else:
         data = fetch_bytes(url, timeout_seconds)
         path.write_bytes(data)
+        write_retrieval_record(path, source=url)
         source = "download"
     return {
         "path": str(path),

@@ -23,6 +23,12 @@ from ...config import RunConfig, validate_run_metadata
 from ...core.admin import build_admin_aoi
 from ...core.aggregation import labelled_sum
 from ...core.assets import checksum_path, link_cached_asset, shared_cache_root, url_cache_key
+from ...core.data_sources import (
+    add_data_source,
+    add_population_and_admin_sources,
+    build_data_source,
+    latest_retrieval_date,
+)
 from ...core.io_paths import append_artifact
 from ...core.pipeline import build_admin_source, build_hazard_run_context, standardize_admin_summary
 from ...core.raster_ops import reproject_array_to_grid, write_array_geotiff
@@ -531,6 +537,41 @@ def run_pipeline(inputs: RunInputs) -> Path:
                 "pyproj": pyproj.__version__,
             },
         }
+    )
+    included_rows = [r for r in event_rows if r.get("status") == "included"]
+    retrieval_files = [catalog_cache_path] + [
+        usgs_cache / "shakemaps" / f"{url_cache_key(str(r['product_url']))}.xml" for r in included_rows
+    ]
+    latest_retrieved, _, n_unretrieved = latest_retrieval_date(retrieval_files)
+    add_data_source(
+        metadata,
+        build_data_source(
+            "usgs_shakemap",
+            access_date=latest_retrieved if n_unretrieved == 0 else None,
+            period={"start": run.window_start.isoformat(), "end": end_label},
+            area=run.iso3,
+            selection={
+                "catalogue_query": catalog_url,
+                "events_considered": len(event_rows),
+                "events_included": included,
+                "included_events": [
+                    {
+                        "event_id": r["event_id"],
+                        "shakemap_version": r.get("shakemap_version"),
+                        "shakemap_status": r.get("shakemap_status"),
+                        "shakemap_update_time": r.get("shakemap_update_time"),
+                    }
+                    for r in included_rows
+                ],
+                "downloads_without_retrieval_record": n_unretrieved,
+            },
+        ),
+    )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=run.iso3,
+        worldpop_path=inputs.worldpop,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
     )
     append_artifact(metadata, "usgs_catalogue", catalog_path)
     for kind, path in artifacts.items():

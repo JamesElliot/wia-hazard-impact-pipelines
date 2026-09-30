@@ -106,7 +106,7 @@ def initialize_run_metadata(
     resolved_paths = paths or build_run_paths(config)
     created = created_utc or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "run_id": config.run_id,
         "created_utc": created,
         "run_config": {

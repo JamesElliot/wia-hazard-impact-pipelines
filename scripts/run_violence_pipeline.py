@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--worldpop-path", default=None)
     p.add_argument("--worldpop-dir", default="./data/population")
     p.add_argument("--acled-csv", default=None)
+    p.add_argument("--acled-access-date", default=None, help="ACLED download date, YYYY-MM-DD.")
     p.add_argument("--acled-dir", default="./data/violence")
     p.add_argument("--worldpop-coverage-min-pct", type=float, default=98.0)
     p.add_argument("--mask-threshold-events", type=int, default=1)
@@ -97,6 +98,7 @@ def main() -> int:
         worldpop_coverage_min_pct=float(args.worldpop_coverage_min_pct),
         mask_threshold_events=int(args.mask_threshold_events),
         all_touched=bool(args.all_touched),
+        acled_access_date=args.acled_access_date,
     )
     payload["status"] = "SUCCESS"
     payload["summary"] = summary

@@ -18,6 +18,14 @@ from shapely.ops import unary_union
 
 from ...config import RunConfig, validate_run_metadata
 from ...core.assets import checksum_path, link_cached_asset, shared_cache_root
+from ...core.data_sources import (
+    add_data_source,
+    add_population_and_admin_sources,
+    build_data_source,
+    ibtracs_facts,
+    read_retrieval_date,
+    write_retrieval_record,
+)
 from ...core.io_paths import append_artifact
 from ...core.pipeline import build_admin_source, build_hazard_run_context, standardize_admin_summary
 from .._admin_config import load_yaml_hazard_admin
@@ -52,6 +60,7 @@ class RunInputs:
     gdacs_footprints: Path | None = None
     gdacs_auto: bool = False
     refresh_cache: bool = False
+    ibtracs_access_date: str | None = None  # IBTrACS download date; else a retrieval record, else null
 
 
 def _configured(inputs: RunInputs) -> dict[str, Any]:
@@ -174,6 +183,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
     gdacs_path = inputs.gdacs_footprints
     gdacs_audit_path = None
     gdacs_cache_source = None
+    gdacs_access_date = None  # retrieval date of the cached GDACS fallback, when one is used
     gdacs = _load_gdacs(gdacs_path)
     if inputs.gdacs_auto:
         fallback_sids = _fallback_storm_ids(candidates, bands, minimum)
@@ -199,6 +209,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
             if cache_complete and not inputs.refresh_cache:
                 gdacs = _load_gdacs(cached_footprints) if cached_footprints.exists() else None
                 gdacs_cache_source = "cache"
+                gdacs_access_date = read_retrieval_date(cached_audit)
             else:
                 if inputs.refresh_cache:
                     for cached_path in (cached_footprints, cached_audit):
@@ -212,6 +223,9 @@ def run_pipeline(inputs: RunInputs) -> Path:
                 )
                 gdacs = fetch_result.footprints
                 gdacs_cache_source = "download"
+                # Keep the retrieval date with the cache so later cache hits can state it.
+                write_retrieval_record(cached_audit, source="https://www.gdacs.org")
+                gdacs_access_date = read_retrieval_date(cached_audit)
             if cached_footprints.exists():
                 link_cached_asset(cached_footprints, gdacs_path)
             if cached_audit.exists():
@@ -457,6 +471,7 @@ def run_pipeline(inputs: RunInputs) -> Path:
         artifact_paths,
         gdacs_cache_source,
         admin_source,
+        gdacs_access_date,
     )
     manifest_path = output_dir / "run_metadata.json"
     validate_run_metadata(manifest)
@@ -502,6 +517,7 @@ def _manifest(
     artifact_paths=None,
     gdacs_cache_source=None,
     admin_source=None,
+    gdacs_access_date=None,
 ):
     input_paths = {
         "ibtracs": Path(inputs.ibtracs),
@@ -564,6 +580,49 @@ def _manifest(
                 "pyproj": pyproj.__version__,
             },
         }
+    )
+    ibtracs = ibtracs_facts(inputs.ibtracs)
+    add_data_source(
+        metadata,
+        build_data_source(
+            "ibtracs",
+            version=ibtracs["version"],
+            access_date=inputs.ibtracs_access_date or read_retrieval_date(inputs.ibtracs),
+            period={"start": metadata["window"]["start"], "end": metadata["window"]["end"]},
+            area=inputs.iso3.upper(),
+            selection={
+                "subset": ibtracs["subset"],
+                "file_name": Path(inputs.ibtracs).name,
+                "footprint": "observed quadrant wind radii",
+            },
+            sha256=metadata["inputs"]["ibtracs"]["sha256"],
+        ),
+    )
+    if gdacs_path:
+        gdacs_supplied = inputs.gdacs_footprints is not None
+        add_data_source(
+            metadata,
+            build_data_source(
+                "gdacs",
+                # A fresh fetch has today as its retrieval date; a cached or supplied file has
+                # no retrieval record here, so its date stays unknown.
+                access_date=(
+                    read_retrieval_date(inputs.gdacs_footprints) if gdacs_supplied else gdacs_access_date
+                ),
+                period={"start": metadata["window"]["start"], "end": metadata["window"]["end"]},
+                area=inputs.iso3.upper(),
+                selection={
+                    "origin": "supplied file" if gdacs_supplied else f"auto fallback ({gdacs_cache_source})",
+                    "used_only_where_ibtracs_radii_incomplete": True,
+                },
+                sha256=metadata["inputs"]["gdacs_footprints"]["sha256"],
+            ),
+        )
+    add_population_and_admin_sources(
+        metadata,
+        iso3=inputs.iso3,
+        worldpop_path=inputs.worldpop,
+        worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
     )
     for kind, path in (artifact_paths or {}).items():
         append_artifact(metadata, kind, Path(path))
