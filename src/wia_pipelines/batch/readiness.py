@@ -227,6 +227,8 @@ def evaluate_batch_readiness(
                     "can_run_utci": False,
                     "can_run_flood": False,
                     "can_run_violence": False,
+                    "can_run_earthquake": False,
+                    "can_run_cyclone": False,
                     "readiness_ok_all": False,
                     "readiness_issues": "; ".join(issues),
                 }
@@ -277,6 +279,10 @@ def evaluate_batch_readiness(
         can_run_utci = can_common
         can_run_flood = can_common
         can_run_violence = can_common and acled_exists
+        # earthquake and cyclone need only the common inputs (admin layer + WorldPop); IBTrACS and the
+        # USGS catalogue are checked by the runners themselves.
+        can_run_earthquake = can_common
+        can_run_cyclone = can_common
 
         issues: list[str] = []
         if not bool(row["is_valid_manifest"]):
@@ -307,6 +313,8 @@ def evaluate_batch_readiness(
                 "can_run_utci": can_run_utci,
                 "can_run_flood": can_run_flood,
                 "can_run_violence": can_run_violence,
+                "can_run_earthquake": can_run_earthquake,
+                "can_run_cyclone": can_run_cyclone,
                 "readiness_ok_all": can_run_spei and can_run_utci and can_run_flood and can_run_violence,
                 "readiness_issues": "; ".join(issues),
             }
