@@ -681,6 +681,7 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
         "flood_binary_threshold_days": int(args.flood_binary_threshold_days),
         "chunk_y": int(args.chunk_y),
         "chunk_x": int(args.chunk_x),
+        "refresh_flood_days": bool(args.refresh_flood_days),
     }
     if args.dry_run:
         payload["status"] = "DRY_RUN"
@@ -712,6 +713,7 @@ def _cmd_run_flood(args: argparse.Namespace) -> int:
                 chunk_y=int(args.chunk_y),
                 chunk_x=int(args.chunk_x),
                 skip_if_complete=bool(args.skip_if_complete),
+                refresh_flood_days=bool(args.refresh_flood_days),
             )
         )
     except RunAlreadyCompleteError as exc:
@@ -1285,6 +1287,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-if-complete",
         action="store_true",
         help="Skip recomputation if this run directory already recorded a successful run (opt-in, PROD-001).",
+    )
+    run_flood.add_argument(
+        "--refresh-flood-days",
+        action="store_true",
+        help=(
+            "Ignore an existing flood-days raster and query GFM again, so GFM coverage and the "
+            "retrieval date are recorded for this run."
+        ),
     )
     run_flood.add_argument("--dry-run", action="store_true")
     run_flood.set_defaults(func=_cmd_run_flood)

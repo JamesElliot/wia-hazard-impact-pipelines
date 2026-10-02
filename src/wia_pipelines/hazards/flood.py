@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import warnings
 from dataclasses import dataclass
@@ -127,6 +128,7 @@ class FloodPipelineRunOptions:
     chunk_y: int = 1024
     chunk_x: int = 1024
     skip_if_complete: bool = False
+    refresh_flood_days: bool = False
 
 
 def _add_flood_data_sources(
@@ -167,6 +169,46 @@ def _add_flood_data_sources(
         worldpop_path=options.worldpop_path,
         worldpop_sha256=metadata["inputs"]["worldpop"]["sha256"],
     )
+
+
+FLOOD_COVERAGE_SUFFIX = ".coverage.json"
+_COVERAGE_KEYS = ("union_bbox_coverage_pct", "union_full_coverage", "union_above_hard_min", "item_count")
+
+
+def flood_coverage_record_path(flood_days_tif: Path) -> Path:
+    return flood_days_tif.with_name(flood_days_tif.name + FLOOD_COVERAGE_SUFFIX)
+
+
+def write_flood_coverage_record(flood_days_tif: Path, flood_stac: dict[str, Any]) -> Path:
+    """Persist the GFM STAC coverage observed when ``flood_days_tif`` was built, so a later run that
+    reuses the raster can restate it instead of reporting no coverage."""
+
+    record = {k: flood_stac[k] for k in _COVERAGE_KEYS if k in flood_stac}
+    out = flood_coverage_record_path(flood_days_tif)
+    out.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return out
+
+
+def read_flood_coverage_record(flood_days_tif: Path) -> dict[str, Any] | None:
+    """Coverage recorded alongside ``flood_days_tif``, or None when absent or unreadable."""
+
+    rec = flood_coverage_record_path(flood_days_tif)
+    if not rec.exists():
+        return None
+    try:
+        data = json.loads(rec.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or "union_bbox_coverage_pct" not in data:
+        return None
+    return data
+
+
+def _reused_coverage_fields(flood_days_tif: Path) -> dict[str, Any]:
+    rec = read_flood_coverage_record(flood_days_tif)
+    if rec is None:
+        return {"coverage_recorded": False}
+    return {**{k: rec[k] for k in _COVERAGE_KEYS if k in rec}, "coverage_recorded": True}
 
 
 def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
@@ -286,7 +328,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
     flood_native_dir = layout["rasters"] / "flood"
     flood_native_dir.mkdir(parents=True, exist_ok=True)
     flood_days_tif = flood_native_dir / f"{iso3}_flood_days_{window_start}_{window_end}.tif"
-    reused_existing_flood_days = flood_days_tif.exists()
+    reused_existing_flood_days = flood_days_tif.exists() and not options.refresh_flood_days
 
     # STAC search and preflight.
     if options.datetime_range:
@@ -343,8 +385,17 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
                 "datetime_range": datetime_range,
                 "reused_existing_flood_days": True,
                 "flood_days_tif": str(flood_days_tif),
+                **_reused_coverage_fields(flood_days_tif),
             },
         }
+        if "union_bbox_coverage_pct" not in metadata["preflight_coverage"]["flood_stac"]:
+            warn_msg = (
+                "Reused an existing flood-days raster with no recorded GFM STAC coverage; coverage and "
+                "the GFM retrieval date are unknown for this run. Re-run with --refresh-flood-days to "
+                "query GFM again and record them."
+            )
+            metadata.setdefault("warnings", [])
+            metadata["warnings"].append({"stage": "preflight_coverage", "message": warn_msg})
     else:
         client = Client.open(options.stac_api_url)
         search = client.search(
@@ -510,6 +561,7 @@ def run_flood_pipeline(options: FloodPipelineRunOptions) -> dict[str, Any]:
             write_retrieval_record(
                 flood_days_tif, retrieved_date=stac_access_date, source=options.stac_api_url
             )
+        write_flood_coverage_record(flood_days_tif, metadata["preflight_coverage"]["flood_stac"])
 
     # Align to worldpop grid and derive binary mask.
     days_aligned = False
