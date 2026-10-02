@@ -1,0 +1,9 @@
+# PAK earthquake/cyclone: widen the WorldPop/admin denominator tolerance.
+# The COD2026-07 admin-2 boundaries cover 97.63% of the WorldPop PAK raster total
+# (2.37% unassigned, ~6M people outside the boundary polygons), which exceeds the
+# default +/-2% tolerance and aborts the run. Widened to 3% (smallest round value
+# that clears the observed gap) by explicit decision on 2026-10-02, so the layers are
+# produced with this caveat recorded; see configs/vct_grd_admin1_fields.yml for the
+# 5% precedent. Use with --config on run-earthquake / run-cyclone for PAK only.
+population:
+  max_unassigned_fraction: 0.03
