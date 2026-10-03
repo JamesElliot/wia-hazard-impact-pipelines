@@ -36,6 +36,6 @@ wins, otherwise a registered per-country COD-AB override (for example MDG, SDN) 
 global asset. The admin layer comes from the manifest admin level (`--admin-layer adminN`, required
 for GeoPackage sources), and boundary sets whose column names differ from the shared default get
 their field mapping applied (`HAZARD_CONFIG_BY_ISO3_LEVEL` in `batch/execute.py`: MDG, SDN, MOZ, LBN,
-MMR, PSE, VCT, GRD). A country that needs a different tolerance (for example PAK,
-`pak_admin2_tolerance.yml`) still needs `--earthquake-cmd-template` / `--cyclone-cmd-template`, or the
-standalone runner.
+MMR, PSE, VCT, GRD, and PAK, whose `pak_admin2_tolerance.yml` widens the WorldPop/admin denominator
+tolerance to 3%). Other countries needing a custom config can use `--earthquake-cmd-template` /
+`--cyclone-cmd-template`, or the standalone runner.

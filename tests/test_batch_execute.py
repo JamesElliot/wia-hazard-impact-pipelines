@@ -379,6 +379,11 @@ class EarthquakeCycloneBatchTests(unittest.TestCase):
             )
             self.assertEqual(hazard_config_arg("KEN", 2, root=root), "")
             self.assertEqual(hazard_config_arg("MDG", 3, root=root), "")
+            (root / "configs" / "pak_admin2_tolerance.yml").write_text("population: {}\n", encoding="utf-8")
+            self.assertEqual(
+                hazard_config_arg("PAK", 2, root=root),
+                f"--config {root / 'configs' / 'pak_admin2_tolerance.yml'}",
+            )
 
     def test_eligibility_uses_common_inputs_when_columns_absent(self) -> None:
         ok = pd.Series(
