@@ -57,7 +57,9 @@ def run_checks(run_dir: Path) -> dict[str, Any]:
 
     preflight = metadata.get("preflight_coverage", {})
     wp_cov = float((preflight.get("worldpop") or {}).get("coverage_pct", 0.0))
-    flood_cov = float((preflight.get("flood_stac") or {}).get("union_bbox_coverage_pct", 0.0))
+    flood_stac = preflight.get("flood_stac") or {}
+    flood_cov_recorded = flood_stac.get("union_bbox_coverage_pct")
+    flood_cov = float(flood_cov_recorded) if flood_cov_recorded is not None else 0.0
     thresholds = preflight.get("thresholds") or {}
     wp_thr = float(thresholds.get("worldpop_coverage_min_pct", 98.0))
     flood_thr = float(thresholds.get("flood_stac_union_coverage_min_pct", 99.999))
@@ -68,7 +70,16 @@ def run_checks(run_dir: Path) -> dict[str, Any]:
         failures += 1
         checks.append(CheckResult("preflight_worldpop_threshold", "FAIL", f"{wp_cov:.3f} < {wp_thr:.3f}"))
 
-    if flood_cov >= flood_thr:
+    if flood_cov_recorded is None and flood_stac.get("reused_existing_flood_days"):
+        checks.append(
+            CheckResult(
+                "preflight_flood_stac_threshold",
+                "WARN",
+                "GFM STAC coverage not recorded (existing flood-days raster was reused); "
+                "re-run with --refresh-flood-days to record it",
+            )
+        )
+    elif flood_cov >= flood_thr:
         checks.append(
             CheckResult("preflight_flood_stac_threshold", "PASS", f"{flood_cov:.3f} >= {flood_thr:.3f}")
         )

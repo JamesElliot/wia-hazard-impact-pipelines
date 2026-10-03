@@ -37,6 +37,14 @@ by this binary mask.
 - Default STAC union-bounds coverage threshold: 99.999%, with a lower hard
   failure bound of 50% used to distinguish warnings from unusable coverage
   (coverage below 50% raises; coverage between 50% and 99.999% warns).
+- Reused flood-days rasters: when `<ISO3>_flood_days_<start>_<end>.tif` already exists in the run
+  folder it is reused and GFM is not queried again. A fresh query writes a
+  `<raster>.coverage.json` sidecar (STAC union coverage, item count) next to the raster, and a
+  reuse restates it in `preflight_coverage.flood_stac` (`coverage_recorded: true`). If the raster
+  has no sidecar, coverage and the GFM retrieval date are unknown: `coverage_recorded` is false,
+  the run records a warning, and `flood-postrun` reports WARN (not a 0% FAIL) for the STAC
+  coverage check. Pass `--refresh-flood-days` to `run-flood` (or the script) to query GFM again and
+  record both.
 - Flood extent resampling and the UTC calendar-day mosaic must be matched
   explicitly in the Earth Engine implementation.
 

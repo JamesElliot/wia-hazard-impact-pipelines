@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--flood-binary-threshold-days", type=int, default=0)
     p.add_argument("--chunk-y", type=int, default=1024)
     p.add_argument("--chunk-x", type=int, default=1024)
+    p.add_argument(
+        "--refresh-flood-days",
+        action="store_true",
+        help="Ignore an existing flood-days raster and query GFM again (records coverage and date).",
+    )
     p.add_argument("--dry-run", action="store_true")
     return p
 
@@ -77,6 +82,7 @@ def main() -> int:
         "flood_binary_threshold_days": int(args.flood_binary_threshold_days),
         "chunk_y": int(args.chunk_y),
         "chunk_x": int(args.chunk_x),
+        "refresh_flood_days": bool(args.refresh_flood_days),
     }
     if args.dry_run:
         payload["status"] = "DRY_RUN"
@@ -106,6 +112,7 @@ def main() -> int:
             flood_binary_threshold_days=int(args.flood_binary_threshold_days),
             chunk_y=int(args.chunk_y),
             chunk_x=int(args.chunk_x),
+            refresh_flood_days=bool(args.refresh_flood_days),
         )
     )
     payload["status"] = "SUCCESS"
