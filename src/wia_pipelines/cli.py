@@ -239,6 +239,8 @@ def _cmd_batch_run(args: argparse.Namespace) -> int:
         "flood": args.flood_cmd_template,
         "violence": args.violence_cmd_template,
         "hydrodrought": args.hydrodrought_cmd_template,
+        "earthquake": args.earthquake_cmd_template,
+        "cyclone": args.cyclone_cmd_template,
     }
     # Keep defaults from execution engine when explicit template is not provided.
     cmd_templates = {k: v for k, v in cmd_templates.items() if v is not None}
@@ -1066,7 +1068,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_run.add_argument(
         "--pipeline",
         action="append",
-        choices=["spei", "utci", "utci_cold", "flood", "violence", "hydrodrought"],
+        choices=["spei", "utci", "utci_cold", "flood", "violence", "hydrodrought", "earthquake", "cyclone"],
         default=None,
     )
     batch_run.add_argument("--spei-cmd-template", default=None)
@@ -1075,6 +1077,8 @@ def build_parser() -> argparse.ArgumentParser:
     batch_run.add_argument("--flood-cmd-template", default=None)
     batch_run.add_argument("--violence-cmd-template", default=None)
     batch_run.add_argument("--hydrodrought-cmd-template", default=None)
+    batch_run.add_argument("--earthquake-cmd-template", default=None)
+    batch_run.add_argument("--cyclone-cmd-template", default=None)
     batch_run.add_argument("--max-retries", type=int, default=2)
     batch_run.add_argument("--stop-on-failure", action=argparse.BooleanOptionalAction, default=False)
     batch_run.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)

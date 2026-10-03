@@ -21,3 +21,21 @@ Single-run commands share default admin and WorldPop locations; cyclone also
 uses `data/cyclone/ibtracs.csv` or the newest IBTrACS-named CSV in that folder.
 Configuration files should therefore focus on methodology and field mappings,
 not repeat machine-specific paths.
+
+## Batch earthquake and cyclone
+
+`wia-hazards batch-run --pipeline earthquake --pipeline cyclone` runs the standalone earthquake and
+cyclone runners from the same readiness and preflight reports as the other hazards. They need only
+the admin layer and WorldPop raster (`can_run_earthquake` / `can_run_cyclone`; older reports without
+those columns fall back to the common-input checks, and a `FAIL` in an optional
+`earthquake_preflight_status` / `cyclone_preflight_status` column skips the step). IBTrACS presence
+and USGS reachability are checked by the runners, not by `batch-preflight`.
+
+Each command resolves its boundary source per country: an explicit non-default batch `--admin-path`
+wins, otherwise a registered per-country COD-AB override (for example MDG, SDN) beats the shared
+global asset. The admin layer comes from the manifest admin level (`--admin-layer adminN`, required
+for GeoPackage sources), and boundary sets whose column names differ from the shared default get
+their field mapping applied (`HAZARD_CONFIG_BY_ISO3_LEVEL` in `batch/execute.py`: MDG, SDN, MOZ, LBN,
+MMR, PSE, VCT, GRD). A country that needs a different tolerance (for example PAK,
+`pak_admin2_tolerance.yml`) still needs `--earthquake-cmd-template` / `--cyclone-cmd-template`, or the
+standalone runner.

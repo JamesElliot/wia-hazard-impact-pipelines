@@ -9,12 +9,48 @@ from typing import Any
 
 import pandas as pd
 
+from ..core.assets import DEFAULT_ADMIN_PATH, resolve_admin_path
 
-PIPELINES = ("spei", "utci", "utci_cold", "flood", "violence", "hydrodrought")
+
+PIPELINES = ("spei", "utci", "utci_cold", "flood", "violence", "hydrodrought", "earthquake", "cyclone")
 
 # utci_cold shares the UTCI readiness and preflight checks (same CDS dataset, same WorldPop and
 # admin inputs), so its eligibility columns are the utci ones.
 _ELIGIBILITY_PIPELINE = {"utci_cold": "utci"}
+
+# earthquake and cyclone need only the admin layer and WorldPop raster. They have no hazard-specific
+# readiness/preflight columns in older reports, so a missing column means "not checked" (eligible
+# when the common inputs are present) rather than "skip".
+_COMMON_INPUT_PIPELINES = ("earthquake", "cyclone")
+_COMMON_INPUT_COLUMNS = ("admin_layer_exists", "admin_has_required_cols", "worldpop_exists")
+
+# Field-mapping YAMLs the YAML-config hazards (earthquake, cyclone) need for boundary sets whose
+# column names differ from the shared default. Keyed by (ISO3, admin level); applied when the file
+# exists. SDN shares the MOZ/MLI/LBN COD-AB gpkg schema.
+HAZARD_CONFIG_BY_ISO3_LEVEL: dict[tuple[str, int], str] = {
+    ("MDG", 2): "configs/mdg_admin2_fields.yml",
+    ("SDN", 2): "configs/moz_admin2_fields.yml",
+    ("MOZ", 2): "configs/moz_admin2_fields.yml",
+    ("LBN", 3): "configs/lbn_admin3_fields.yml",
+    ("MMR", 3): "configs/mmr_admin3_fields.yml",
+    ("PSE", 3): "configs/pse_admin3_fields.yml",
+    ("VCT", 1): "configs/vct_grd_admin1_fields.yml",
+    ("GRD", 1): "configs/vct_grd_admin1_fields.yml",
+}
+
+
+def _default_admin_resolved() -> Path:
+    return Path(DEFAULT_ADMIN_PATH).resolve()
+
+
+def hazard_config_arg(iso3: str, adm_level: int, root: Path | None = None) -> str:
+    """``--config <path>`` for boundary sets needing a field mapping, else an empty string."""
+
+    rel = HAZARD_CONFIG_BY_ISO3_LEVEL.get((str(iso3).upper(), int(adm_level)))
+    if not rel:
+        return ""
+    path = (root or Path.cwd()) / rel
+    return f"--config {path}" if path.exists() else ""
 
 
 def _now_utc() -> str:
@@ -98,8 +134,16 @@ def _normalize_pipeline_list(pipelines: list[str] | None) -> list[str]:
     return out
 
 
-def _build_context(row: pd.Series) -> dict[str, Any]:
+def _build_context(row: pd.Series, admin_path: Path | None = None) -> dict[str, Any]:
+    iso3 = str(row["iso3"]).upper()
+    level = int(row["target_adm_level"])
+    # An explicit batch --admin-path wins; the default global asset yields to a registered per-country
+    # COD-AB override (e.g. MDG), as it does when a runner is invoked without --admin-path.
+    explicit = admin_path is not None and Path(admin_path).resolve() != _default_admin_resolved()
+    admin_for_iso3 = resolve_admin_path(admin_path if explicit else None, iso3=iso3)
     return {
+        "admin_path_for_iso3": str(admin_for_iso3),
+        "config_arg": hazard_config_arg(iso3, level),
         "task_id": int(row["task_id"]),
         "iso3": str(row["iso3"]).upper(),
         "as_of_date": str(row["as_of_date"]),
@@ -114,6 +158,20 @@ def _build_context(row: pd.Series) -> dict[str, Any]:
 
 def _is_pipeline_eligible(row: pd.Series, pipeline: str) -> tuple[bool, str]:
     base = _ELIGIBILITY_PIPELINE.get(pipeline, pipeline)
+    if pipeline in _COMMON_INPUT_PIPELINES:
+        if not bool(row.get("is_valid_manifest", True)):
+            return False, "manifest_invalid"
+        explicit = row.get(f"can_run_{pipeline}")
+        if explicit is not None and not pd.isna(explicit):
+            ok = bool(explicit)
+        else:
+            ok = all(bool(row.get(c, False)) for c in _COMMON_INPUT_COLUMNS)
+        if not ok:
+            return False, f"can_run_{pipeline}_false"
+        status = str(row.get(f"{pipeline}_preflight_status", "")).upper()
+        if status == "FAIL":
+            return False, f"{pipeline}_preflight_status_fail"
+        return True, "eligible"
     can_run_col = f"can_run_{base}"
     preflight_col = f"{base}_preflight_status"
     if not bool(row.get("is_valid_manifest", True)):
@@ -193,6 +251,37 @@ def _default_flood_cmd(admin_path: Path, output_root: Path) -> str:
         "--lookback-months {lookback_months} "
         "--target-adm-level {target_adm_level} "
         "--admin-path " + str(admin_path) + " "
+        "--output-root " + str(output_root)
+    )
+
+
+def _default_earthquake_cmd(admin_path: Path, output_root: Path) -> str:
+    # The admin path and --config are resolved per country (see _build_context): a registered COD-AB
+    # override (e.g. MDG) beats the shared global asset, and boundary sets with non-default column
+    # names get their field-mapping YAML. gpkg sources need the layer named explicitly.
+    return (
+        "env PYTHONPATH=src python scripts/run_earthquake_pipeline.py "
+        "--iso3 {iso3} "
+        "--as-of-date {as_of_date} "
+        "--lookback-months {lookback_months} "
+        "--target-adm-level {target_adm_level} "
+        "--admin-path {admin_path_for_iso3} "
+        "--admin-layer {admin_layer} "
+        "{config_arg} "
+        "--output-root " + str(output_root)
+    )
+
+
+def _default_cyclone_cmd(admin_path: Path, output_root: Path) -> str:
+    return (
+        "env PYTHONPATH=src python scripts/run_cyclone_pipeline.py "
+        "--iso3 {iso3} "
+        "--as-of-date {as_of_date} "
+        "--lookback-months {lookback_months} "
+        "--target-adm-level {target_adm_level} "
+        "--admin-path {admin_path_for_iso3} "
+        "--admin-layer {admin_layer} "
+        "{config_arg} "
         "--output-root " + str(output_root)
     )
 
@@ -293,6 +382,8 @@ def run_batch_execution(
         # which is safe but means --pipeline hydrodrought currently requires
         # driving run_hydrodrought_pipeline directly per country instead.
         "hydrodrought": _default_hydrodrought_cmd(admin_path=admin_path, output_root=output_root),
+        "earthquake": _default_earthquake_cmd(admin_path=admin_path, output_root=output_root),
+        "cyclone": _default_cyclone_cmd(admin_path=admin_path, output_root=output_root),
     }
     if command_templates:
         templates.update(command_templates)
@@ -363,7 +454,7 @@ def run_batch_execution(
         _write_partial_reports(out_dir, rows, total_steps)
 
     for _, row in merged.sort_values(["task_id"]).iterrows():
-        ctx = _build_context(row)
+        ctx = _build_context(row, admin_path=admin_path)
         for pipeline in pipeline_order:
             step = _step_key(ctx["iso3"], ctx["as_of_date"], ctx["lookback_months"], pipeline)
             if resume and step in existing_done:

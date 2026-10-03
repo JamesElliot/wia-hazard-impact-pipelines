@@ -3,10 +3,17 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 
-from wia_pipelines.batch.execute import PIPELINES, _PIPELINE_HAZARD_DIR, run_batch_execution
+from wia_pipelines.batch.execute import (
+    PIPELINES,
+    _PIPELINE_HAZARD_DIR,
+    _is_pipeline_eligible,
+    hazard_config_arg,
+    run_batch_execution,
+)
 
 
 class BatchExecutionTests(unittest.TestCase):
@@ -296,6 +303,105 @@ class BatchExecutionTests(unittest.TestCase):
             self.assertEqual(out["summary"]["n_success"], 1)
             report = pd.read_csv(out["report_csv"])
             self.assertEqual(str(report.iloc[0]["status"]).upper(), "SUCCESS")
+
+
+class EarthquakeCycloneBatchTests(unittest.TestCase):
+    def _reports(self, td: str, **readiness_extra) -> tuple[Path, Path]:
+        row = {
+            "task_id": 1,
+            "iso3": "MDG",
+            "as_of_date": "2025-12-31",
+            "lookback_months": 12,
+            "target_adm_level": 2,
+            "is_valid_manifest": True,
+            "admin_layer": "admin2",
+            "admin_layer_exists": True,
+            "admin_has_required_cols": True,
+            "worldpop_exists": True,
+            "worldpop_path": "/tmp/mdg.tif",
+        }
+        row.update(readiness_extra)
+        r, p = Path(td) / "r.csv", Path(td) / "p.csv"
+        pd.DataFrame([row]).to_csv(r, index=False)
+        # An older preflight report: no earthquake/cyclone columns.
+        pd.DataFrame([{"task_id": 1, "violence_preflight_status": "PASS"}]).to_csv(p, index=False)
+        return r, p
+
+    def test_pipelines_include_earthquake_and_cyclone(self) -> None:
+        self.assertIn("earthquake", PIPELINES)
+        self.assertIn("cyclone", PIPELINES)
+
+    def test_dry_run_uses_per_country_admin_layer_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            r, p = self._reports(td)
+            override = Path(td) / "mdg" / "admin_boundaries.gpkg"
+            with mock.patch(
+                "wia_pipelines.batch.execute.resolve_admin_path", return_value=override
+            ) as resolve:
+                out = run_batch_execution(
+                    readiness=r,
+                    preflight=p,
+                    out_dir=Path(td) / "out",
+                    pipelines=["earthquake", "cyclone"],
+                    dry_run=True,
+                )
+            self.assertEqual(out["summary"]["n_dry_run"], 2)
+            resolve.assert_called()
+            self.assertIsNone(resolve.call_args.args[0] if resolve.call_args.args else None)
+            for cmd in out["rows"]["command"]:
+                self.assertIn(f"--admin-path {override}", cmd)
+                self.assertIn("--admin-layer admin2", cmd)
+                self.assertIn("scripts/run_", cmd)
+
+    def test_explicit_batch_admin_path_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            r, p = self._reports(td)
+            explicit = Path(td) / "custom.gpkg"
+            out = run_batch_execution(
+                readiness=r,
+                preflight=p,
+                out_dir=Path(td) / "out",
+                pipelines=["earthquake"],
+                admin_path=explicit,
+                dry_run=True,
+            )
+            self.assertIn(f"--admin-path {explicit.resolve()}", out["rows"].iloc[0]["command"])
+
+    def test_hazard_config_arg_applies_only_when_mapping_and_file_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(hazard_config_arg("MDG", 2, root=root), "")
+            (root / "configs").mkdir()
+            (root / "configs" / "mdg_admin2_fields.yml").write_text("admin: {}\n", encoding="utf-8")
+            self.assertEqual(
+                hazard_config_arg("mdg", 2, root=root),
+                f"--config {root / 'configs' / 'mdg_admin2_fields.yml'}",
+            )
+            self.assertEqual(hazard_config_arg("KEN", 2, root=root), "")
+            self.assertEqual(hazard_config_arg("MDG", 3, root=root), "")
+
+    def test_eligibility_uses_common_inputs_when_columns_absent(self) -> None:
+        ok = pd.Series(
+            {
+                "is_valid_manifest": True,
+                "admin_layer_exists": True,
+                "admin_has_required_cols": True,
+                "worldpop_exists": True,
+            }
+        )
+        for pipeline in ("earthquake", "cyclone"):
+            self.assertEqual(_is_pipeline_eligible(ok, pipeline), (True, "eligible"))
+            missing = ok.copy()
+            missing["worldpop_exists"] = False
+            self.assertEqual(_is_pipeline_eligible(missing, pipeline), (False, f"can_run_{pipeline}_false"))
+
+    def test_explicit_readiness_column_and_failed_preflight_are_respected(self) -> None:
+        row = pd.Series({"is_valid_manifest": True, "can_run_cyclone": False})
+        self.assertEqual(_is_pipeline_eligible(row, "cyclone"), (False, "can_run_cyclone_false"))
+        row = pd.Series(
+            {"is_valid_manifest": True, "can_run_cyclone": True, "cyclone_preflight_status": "FAIL"}
+        )
+        self.assertEqual(_is_pipeline_eligible(row, "cyclone"), (False, "cyclone_preflight_status_fail"))
 
 
 if __name__ == "__main__":
