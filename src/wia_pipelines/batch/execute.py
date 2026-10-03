@@ -36,6 +36,9 @@ HAZARD_CONFIG_BY_ISO3_LEVEL: dict[tuple[str, int], str] = {
     ("PSE", 3): "configs/pse_admin3_fields.yml",
     ("VCT", 1): "configs/vct_grd_admin1_fields.yml",
     ("GRD", 1): "configs/vct_grd_admin1_fields.yml",
+    # PAK: shared global boundaries, but they cover only 97.63% of the WorldPop total, so the default
+    # +/-2% denominator tolerance aborts earthquake/cyclone; the config widens it to 3% (see the file).
+    ("PAK", 2): "configs/pak_admin2_tolerance.yml",
 }
 
 
